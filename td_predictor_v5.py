@@ -175,6 +175,47 @@ def load_schedule(season):
         return pd.DataFrame()
 
 
+def load_injury_report(season, week):
+    """
+    Official team-submitted injury report (Out/Doubtful/Questionable/IR),
+    same source ESPN and NFL.com use -- not derived from betting markets
+    at all. This is the honest way to answer "is this player even live
+    tonight," instead of inferring it from sportsbook prop availability.
+
+    Note: this reflects the practice-week report (Wed/Thu/Fri designations
+    plus final Friday status), which is normally the most current public
+    info available at build time. It does NOT capture the official
+    gameday-inactives list published ~90 minutes before kickoff -- there's
+    no free structured feed for that; the printed Friday status is the
+    closest free, legitimate proxy.
+    """
+    try:
+        injuries = to_pandas(nflreadpy.load_injuries(seasons=[season]))
+    except Exception as e:
+        print(f"Injury report warning: {e}")
+        return pd.DataFrame(columns=["player_id", "injury_status"])
+
+    if injuries.empty:
+        return pd.DataFrame(columns=["player_id", "injury_status"])
+
+    if "week" in injuries.columns:
+        injuries = injuries[pd.to_numeric(injuries["week"], errors="coerce") == week]
+
+    id_col = next((c for c in ["player_id", "gsis_id", "nfl_id"] if c in injuries.columns), None)
+    status_col = next((c for c in ["report_status", "game_status", "status"] if c in injuries.columns), None)
+
+    if id_col is None or status_col is None:
+        print(f"Injury report warning: unexpected columns {sorted(injuries.columns.tolist())}")
+        return pd.DataFrame(columns=["player_id", "injury_status"])
+
+    out = injuries[[id_col, status_col]].rename(
+        columns={id_col: "player_id", status_col: "injury_status"}
+    )
+    out["player_id"] = out["player_id"].astype(str)
+    out = out.dropna(subset=["injury_status"]).drop_duplicates("player_id", keep="last")
+    return out
+
+
 def normalize_rosters(rosters):
     if rosters.empty:
         return rosters
@@ -405,10 +446,77 @@ def score_players(profiles, team_environment, defensive_matchups):
         + df["role_score"] * WEIGHTS["role"]
     )
 
+    # Injury penalty -- based on official team-submitted report, not
+    # betting markets. "Out"/"IR"/"Doubtful" essentially zero the score
+    # out (they may still get flipped to Active later in the week, at
+    # which point rerunning the model picks that up automatically).
+    # "Questionable" gets a moderate haircut since most Questionable
+    # players do end up suiting up.
+    if "injury_status" in df.columns:
+        injury_multiplier = {
+            "Out": 0.05, "IR": 0.0, "Injured Reserve": 0.0,
+            "Doubtful": 0.15, "Questionable": 0.75,
+        }
+        df["injury_status"] = df["injury_status"].fillna("Active")
+        df["td_score"] = df["td_score"] * df["injury_status"].map(injury_multiplier).fillna(1.0)
+
     # Still an illustrative transform, not a calibrated probability.
     df["td_estimate"] = (5 + df["td_score"] * 0.42).clip(upper=49.0)
 
     return df
+
+
+def inject_missing_roster_players(profiles, rosters, matchups):
+    """
+    Adds any skill-position player who's on a current roster for a team
+    playing this week, but has zero rows in the historical stats (true
+    rookies, or vets who just haven't played this specific stretch).
+    Without this, players like a Week 1 rookie TE simply never appear in
+    rankings at all -- not ranked low, just invisible.
+
+    They're added with all-zero usage/efficiency numbers, which
+    naturally sends their opportunity/red-zone/efficiency scores to the
+    bottom of the percentile ranks (appropriately -- no track record
+    means no demonstrated role). Their matchup_score and
+    team_environment_score still compute normally off real team/opponent
+    data, so they're not literally a flat zero -- just correctly
+    low-confidence. The "games" column stays 0 so the UI can flag them
+    as unproven/no-data rather than implying a real ranking.
+    """
+    if rosters.empty or not matchups:
+        return profiles
+
+    teams_playing = set(matchups.keys())
+    pool = rosters[
+        rosters["position"].isin(POSITIONS)
+        & rosters["team"].isin(teams_playing)
+        & (~rosters["player_id"].isin(["", "nan"]))
+    ].copy()
+
+    existing_ids = set(profiles["player_id"].astype(str))
+    pool = pool[~pool["player_id"].astype(str).isin(existing_ids)]
+    pool = pool.drop_duplicates("player_id")
+
+    new_rows = []
+    for _, r in pool.iterrows():
+        name = str(r.get("model_player_name", "")).strip()
+        if not name or name == "nan":
+            continue
+        new_rows.append({
+            "player_id": str(r["player_id"]), "player": name,
+            "position": str(r["position"]), "team": str(r["team"]),
+            "targets_pg": 0.0, "carries_pg": 0.0, "receptions_pg": 0.0,
+            "opportunities_pg": 0.0, "redzone_opportunity_pg": 0.0,
+            "receiving_tds_pg": 0.0, "rushing_tds_pg": 0.0, "td_rate": 0.0,
+            "receiving_yards_pg": 0.0, "rushing_yards_pg": 0.0, "target_share": 0.0,
+            "season_targets": 0.0, "season_carries": 0.0, "season_tds": 0.0,
+            "games": 0, "last_week": 0,
+        })
+
+    if not new_rows:
+        return profiles
+
+    return pd.concat([profiles, pd.DataFrame(new_rows)], ignore_index=True)
 
 
 def print_rankings(df, top):
@@ -484,6 +592,14 @@ def get_predictions(season, week, status_callback=None):
             return row
 
         profiles = profiles.apply(update_roster, axis=1)
+
+    profiles = inject_missing_roster_players(profiles, rosters, matchups)
+
+    status("Loading injury report...")
+    injuries = load_injury_report(season, week)
+    profiles["player_id"] = profiles["player_id"].astype(str)
+    profiles = profiles.merge(injuries, on="player_id", how="left")
+    profiles["injury_status"] = profiles["injury_status"].fillna("Active")
 
     profiles["opponent"] = profiles["team"].map(matchups)
     profiles = profiles[profiles["opponent"].notna()].copy()
