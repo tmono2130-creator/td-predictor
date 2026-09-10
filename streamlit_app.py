@@ -63,11 +63,11 @@ if "scored" in st.session_state:
     if view.empty:
         st.warning("No players match this filter. Try a different team or position.")
     else:
-        display_cols = ["player", "team", "position", "opponent", "td_score", "td_estimate", "games"]
+        display_cols = ["player", "team", "position", "opponent", "td_score", "td_estimate", "games", "injury_status"]
         display_df = view[display_cols].rename(columns={
             "player": "Player", "team": "Team", "position": "Pos",
             "opponent": "Opp", "td_score": "Score", "td_estimate": "Est. TD%",
-            "games": "Sample",
+            "games": "Sample", "injury_status": "Status",
         }).reset_index(drop=True)
         display_df["Sample"] = display_df["Sample"].apply(
             lambda g: "🆕 No history" if g == 0 else f"{g} games"
