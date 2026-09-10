@@ -63,11 +63,15 @@ if "scored" in st.session_state:
     if view.empty:
         st.warning("No players match this filter. Try a different team or position.")
     else:
-        display_cols = ["player", "team", "position", "opponent", "td_score", "td_estimate"]
+        display_cols = ["player", "team", "position", "opponent", "td_score", "td_estimate", "games"]
         display_df = view[display_cols].rename(columns={
             "player": "Player", "team": "Team", "position": "Pos",
             "opponent": "Opp", "td_score": "Score", "td_estimate": "Est. TD%",
+            "games": "Sample",
         }).reset_index(drop=True)
+        display_df["Sample"] = display_df["Sample"].apply(
+            lambda g: "🆕 No history" if g == 0 else f"{g} games"
+        )
         display_df.index = display_df.index + 1
 
         st.dataframe(
@@ -78,10 +82,11 @@ if "scored" in st.session_state:
             height=min(600, 45 * (len(display_df) + 1)),
         )
 
-        st.caption("Est. TD% is an illustrative model transform, not a calibrated probability.")
+        st.caption("Est. TD% is an illustrative model transform, not a calibrated probability. "
+                   "🆕 No history = rookie or player with zero games in the sample -- shown for "
+                   "visibility, but the score reflects team/matchup context only, not personal usage.")
 
         csv = view.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV", csv, f"td_scores_{season}_week{week}.csv", "text/csv")
 else:
     st.info("Set your season/week above and hit **Run predictions**.")
-    
