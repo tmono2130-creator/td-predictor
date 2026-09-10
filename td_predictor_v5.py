@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import nflreadpy
 
@@ -20,12 +21,19 @@ import nflreadpy
 POSITIONS = {"RB", "FB", "WR", "TE"}
 
 WEIGHTS = {
-    "opportunity": 0.30,
-    "red_zone": 0.25,
-    "efficiency": 0.15,
-    "matchup": 0.15,
-    "team_environment": 0.10,
-    "role": 0.05,
+    # Updated to match the logistic regression fit from backtest.py
+    # (2025 season, wk2-18) -- this is a more rigorous signal than the
+    # earlier correlation-based guess, since it accounts for the
+    # collinearity between opportunity_score and role_score directly
+    # (regression found role_score's coefficient rounds to 0 once
+    # opportunity is already in the model -- consistent with role_score
+    # being built partly from the same opportunity number).
+    "opportunity": 0.65,
+    "red_zone": 0.14,
+    "efficiency": 0.13,
+    "matchup": 0.04,
+    "team_environment": 0.04,
+    "role": 0.00,
 }
 
 RECENCY_WINDOW_GAMES = 10  # only last N games count toward "current form"
@@ -460,8 +468,17 @@ def score_players(profiles, team_environment, defensive_matchups):
         df["injury_status"] = df["injury_status"].fillna("Active")
         df["td_score"] = df["td_score"] * df["injury_status"].map(injury_multiplier).fillna(1.0)
 
-    # Still an illustrative transform, not a calibrated probability.
-    df["td_estimate"] = (5 + df["td_score"] * 0.42).clip(upper=49.0)
+    # Calibrated against real 2025-season outcomes via backtest.py
+    # (2025 wk2-18), refit after the opportunity-heavy reweighting above.
+    # Re-run backtest.py after any future WEIGHTS change and update these
+    # to match -- changing weights shifts the td_score distribution, so a
+    # stale calibration curve will mislabel the percentage even if the
+    # underlying ranking is still good.
+    _CALIBRATION_SCORE_POINTS = [26, 28, 30, 40, 51, 59, 66, 75, 84, 98]
+    _CALIBRATION_ACTUAL_PCT =   [0.28, 0.35, 0.14, 0.28, 1.55, 2.32, 6.04, 8.65, 16.88, 31.41]
+    df["td_estimate"] = np.interp(
+        df["td_score"], _CALIBRATION_SCORE_POINTS, _CALIBRATION_ACTUAL_PCT
+    )
 
     return df
 
