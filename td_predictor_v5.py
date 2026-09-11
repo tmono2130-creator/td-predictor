@@ -21,18 +21,25 @@ import nflreadpy
 POSITIONS = {"RB", "FB", "WR", "TE"}
 
 WEIGHTS = {
-    # Updated to match the logistic regression fit from backtest.py
-    # (2025 season, wk2-18) -- this is a more rigorous signal than the
-    # earlier correlation-based guess, since it accounts for the
-    # collinearity between opportunity_score and role_score directly
-    # (regression found role_score's coefficient rounds to 0 once
-    # opportunity is already in the model -- consistent with role_score
-    # being built partly from the same opportunity number).
-    "opportunity": 0.65,
-    "red_zone": 0.14,
-    "efficiency": 0.13,
-    "matchup": 0.04,
-    "team_environment": 0.04,
+    # v4 -- rebuilt from correlation evidence averaged across BOTH the
+    # 2025 and 2024 backtests, not from the logistic regression
+    # suggestion. The regression output swung wildly between seasons
+    # (role_score: 0.000 -> 0.461, opportunity: 0.650 -> 0.181) because
+    # role_score and opportunity_score are collinear by construction --
+    # that instability is a red flag about the regression, not a real
+    # shift in what matters. role dropped to 0 here rather than chasing
+    # an unstable coefficient.
+    #
+    # matchup_score correlation went 0.016 -> 0.022 -> -0.007 across
+    # three independent checks (including after tripling its data
+    # sample via load_defense_history). A correlation flipping sign near
+    # zero across seasons is the signature of no real signal, not
+    # "needs more tuning" -- weight cut hard and left there on purpose.
+    "opportunity": 0.36,
+    "red_zone": 0.35,
+    "efficiency": 0.24,
+    "matchup": 0.02,
+    "team_environment": 0.03,
     "role": 0.00,
 }
 
@@ -191,6 +198,33 @@ def player_vs_opponent_report(stats, player_id, opponent_code):
         "recent_games": recent,
         "career_games_in_sample": len(p),
     }
+
+
+def load_defense_history(season, lookback_seasons=3):
+    """
+    Pulls multiple PAST seasons (not including the current in-progress
+    one) specifically for defensive matchup stability. build_defensive_
+    matchups() was previously fed only ~1.5 seasons of data (prior season
+    + partial current season), which the backtest showed produces a
+    near-zero-signal matchup_score -- likely because 32 teams x ~17 games
+    just isn't enough red-zone events to separate real defensive quality
+    from noise. Pooling 3 prior seasons with recency decay (older seasons
+    count less) gives a meaningfully larger, still recency-aware sample.
+    """
+    seasons = list(range(season - lookback_seasons, season))
+    frames = []
+    for s in seasons:
+        try:
+            df = load_player_stats([s])
+        except Exception as e:
+            print(f"Defense history: could not load {s}: {e}")
+            continue
+        years_ago = season - s
+        df["model_source_weight"] = 0.6 ** years_ago  # more recent seasons weighted higher
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def load_redzone_opportunity(seasons):
@@ -577,7 +611,7 @@ def score_players(profiles, team_environment, defensive_matchups):
     # stale calibration curve will mislabel the percentage even if the
     # underlying ranking is still good.
     _CALIBRATION_SCORE_POINTS = [26, 28, 30, 40, 51, 59, 66, 75, 84, 98]
-    _CALIBRATION_ACTUAL_PCT =   [0.28, 0.35, 0.14, 0.28, 1.55, 2.32, 6.04, 8.65, 16.88, 31.41]
+    _CALIBRATION_ACTUAL_PCT =   [0.21, 0.42, 0.14, 0.28, 1.55, 2.39, 5.97, 8.65, 16.95, 31.34]
     df["td_estimate"] = np.interp(
         df["td_score"], _CALIBRATION_SCORE_POINTS, _CALIBRATION_ACTUAL_PCT
     )
@@ -725,7 +759,17 @@ def get_predictions(season, week, status_callback=None):
     profiles = profiles[profiles["position"].isin(POSITIONS)].copy()
 
     team_environment = build_team_environment(all_stats)
-    defensive_matchups = build_defensive_matchups(all_stats)
+
+    status("Loading multi-season defensive history...")
+    defense_history = load_defense_history(season, lookback_seasons=3)
+    if not current.empty:
+        current_for_defense = current.copy()
+        current_for_defense["model_source_weight"] = 1.0  # this season's games count fully
+        defense_history = pd.concat([defense_history, current_for_defense], ignore_index=True)
+    defensive_matchups = build_defensive_matchups(
+        defense_history if not defense_history.empty else all_stats
+    )
+
     profiles = build_role_scores(profiles)
 
     status("Scoring players...")
