@@ -442,6 +442,16 @@ def build_defensive_matchups(stats):
     FIX #5: split TDs allowed into pass (receiving_tds) and rush
     (rushing_tds) buckets so a WR/TE matchup uses pass-D numbers and
     an RB matchup uses run-D numbers, instead of one blended figure.
+
+    FIX (matchup accuracy): the raw pass_td_allowed/rush_td_allowed sums
+    were computed but never actually turned into a RATE -- meaning a
+    defense that faced 400 targets and allowed 20 TDs looked identical
+    to one that faced 150 targets and allowed 20. That's almost
+    certainly why backtest.py measured matchup_score's correlation with
+    real scoring at 0.016 (pure noise). Now normalized to TDs allowed
+    per opportunity faced, and recency-weighted via model_source_weight
+    (current season counts more than prior season) same as the rest of
+    the model already does for player-level stats.
     """
     s = stats.copy()
     for col in ["opponent_team", "receiving_tds", "rushing_tds", "targets", "carries"]:
@@ -450,12 +460,37 @@ def build_defensive_matchups(stats):
     for col in ["receiving_tds", "rushing_tds", "targets", "carries"]:
         s[col] = clean_num(s[col])
 
+    if "model_source_weight" not in s.columns:
+        s["model_source_weight"] = 1.0
+    s["model_source_weight"] = pd.to_numeric(s["model_source_weight"], errors="coerce").fillna(1.0)
+    w = s["model_source_weight"]
+
+    s["w_pass_td"] = s["receiving_tds"] * w
+    s["w_rush_td"] = s["rushing_tds"] * w
+    s["w_targets"] = s["targets"] * w
+    s["w_carries"] = s["carries"] * w
+
     defense = s.groupby("opponent_team").agg(
+        w_pass_td=("w_pass_td", "sum"),
+        w_rush_td=("w_rush_td", "sum"),
+        w_targets=("w_targets", "sum"),
+        w_carries=("w_carries", "sum"),
         pass_td_allowed=("receiving_tds", "sum"),
         rush_td_allowed=("rushing_tds", "sum"),
         pass_opportunities_allowed=("targets", "sum"),
         rush_opportunities_allowed=("carries", "sum"),
     ).reset_index()
+
+    # Rate = TDs allowed per opportunity faced, not raw count. This is
+    # the actual fix -- a small-sample-safe TD rate instead of a count
+    # that's really just measuring "how many games has this defense played."
+    defense["pass_td_rate"] = defense["w_pass_td"] / defense["w_targets"].replace(0, pd.NA)
+    defense["rush_td_rate"] = defense["w_rush_td"] / defense["w_carries"].replace(0, pd.NA)
+    league_pass_avg = defense["pass_td_rate"].mean()
+    league_rush_avg = defense["rush_td_rate"].mean()
+    defense["pass_td_rate"] = defense["pass_td_rate"].fillna(league_pass_avg)
+    defense["rush_td_rate"] = defense["rush_td_rate"].fillna(league_rush_avg)
+
     return defense.rename(columns={"opponent_team": "team"})
 
 
@@ -483,20 +518,20 @@ def score_players(profiles, team_environment, defensive_matchups):
     # Efficiency unchanged conceptually
     df["efficiency_score"] = df["td_rate"].apply(lambda x: percentile_score(x, df["td_rate"]))
 
-    # Matchup: split by role (FIX #5)
-    pass_map = dict(zip(defensive_matchups["team"], defensive_matchups["pass_td_allowed"]))
-    rush_map = dict(zip(defensive_matchups["team"], defensive_matchups["rush_td_allowed"]))
+    # Matchup: now a real per-opportunity RATE, split by role
+    pass_map = dict(zip(defensive_matchups["team"], defensive_matchups["pass_td_rate"]))
+    rush_map = dict(zip(defensive_matchups["team"], defensive_matchups["rush_td_rate"]))
 
     def matchup_value(row):
         if row["position"] in ("WR", "TE"):
-            return pass_map.get(row["opponent"], defensive_matchups["pass_td_allowed"].median())
-        return rush_map.get(row["opponent"], defensive_matchups["rush_td_allowed"].median())
+            return pass_map.get(row["opponent"], defensive_matchups["pass_td_rate"].median())
+        return rush_map.get(row["opponent"], defensive_matchups["rush_td_rate"].median())
 
     df["opponent_td_allowed"] = df.apply(matchup_value, axis=1)
 
     def matchup_percentile(row):
-        ref = (defensive_matchups["pass_td_allowed"] if row["position"] in ("WR", "TE")
-               else defensive_matchups["rush_td_allowed"])
+        ref = (defensive_matchups["pass_td_rate"] if row["position"] in ("WR", "TE")
+               else defensive_matchups["rush_td_rate"])
         return percentile_score(row["opponent_td_allowed"], ref)
 
     df["matchup_score"] = df.apply(matchup_percentile, axis=1)
