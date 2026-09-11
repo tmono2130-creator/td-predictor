@@ -126,6 +126,73 @@ def load_player_stats(seasons):
     return stats
 
 
+def load_multi_season_stats(seasons):
+    """
+    Loads several seasons of weekly player stats at once, for the
+    player-lookup feature's 'career vs. this opponent' history. Missing
+    an individual season (e.g. a data-source gap) doesn't kill the whole
+    lookup -- it just narrows the history to whatever loaded.
+    """
+    frames = []
+    for s in seasons:
+        try:
+            frames.append(load_player_stats([s]))
+        except Exception as e:
+            print(f"Could not load {s} for player lookup: {e}")
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def find_player_matches(stats, name_query):
+    """Case-insensitive substring search over every player name in the loaded stats."""
+    name_query = name_query.strip().lower()
+    if not name_query or stats.empty:
+        return pd.DataFrame(columns=["player_id", "player_display_name"])
+    names = stats[["player_id", "player_display_name"]].copy()
+    names["player_id"] = names["player_id"].astype(str)
+    names["player_display_name"] = names["player_display_name"].fillna("").astype(str)
+    matches = names[names["player_display_name"].str.lower().str.contains(name_query, regex=False)]
+    return matches.drop_duplicates("player_id").sort_values("player_display_name")
+
+
+def player_vs_opponent_report(stats, player_id, opponent_code):
+    """
+    Returns the searched player's full game log, split into:
+      - every past game specifically against opponent_code
+      - their last 5 games overall (recent form, any opponent)
+
+    This is intentionally team-level only. Individual-defender coverage
+    data (who specifically guarded them) isn't available in any free
+    dataset -- see the JSN-vs-Gonzalez research earlier in this project
+    for why that required manual search/reporting instead of a query.
+    """
+    p = stats[stats["player_id"].astype(str) == str(player_id)].copy()
+    if p.empty:
+        return None
+
+    for col in ["targets", "carries", "receptions", "receiving_yards", "rushing_yards",
+                "receiving_tds", "rushing_tds", "season", "week", "opponent_team"]:
+        if col not in p.columns:
+            p[col] = 0
+
+    for col in ["targets", "carries", "receptions", "receiving_yards", "rushing_yards",
+                "receiving_tds", "rushing_tds", "season", "week"]:
+        p[col] = clean_num(p[col])
+
+    p["tds"] = p["receiving_tds"] + p["rushing_tds"]
+    p = p.sort_values(["season", "week"])
+
+    vs_opponent = p[p["opponent_team"].astype(str).str.upper() == str(opponent_code).upper()].copy()
+    recent = p.tail(5).copy()
+
+    return {
+        "vs_opponent_games": vs_opponent,
+        "recent_games": recent,
+        "career_games_in_sample": len(p),
+    }
+
+
 def load_redzone_opportunity(seasons):
     """
     FIX #3: pull actual red-zone (<=20 yd line) and end-zone (<=10 yd
