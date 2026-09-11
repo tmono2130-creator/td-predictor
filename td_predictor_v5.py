@@ -610,8 +610,8 @@ def score_players(profiles, team_environment, defensive_matchups):
     # to match -- changing weights shifts the td_score distribution, so a
     # stale calibration curve will mislabel the percentage even if the
     # underlying ranking is still good.
-    _CALIBRATION_SCORE_POINTS = [26, 28, 30, 40, 51, 59, 66, 75, 84, 98]
-    _CALIBRATION_ACTUAL_PCT =   [0.21, 0.42, 0.14, 0.28, 1.55, 2.39, 5.97, 8.65, 16.95, 31.34]
+    _CALIBRATION_SCORE_POINTS = [31, 33, 35, 40, 50, 60, 68, 76, 84, 97]
+    _CALIBRATION_ACTUAL_PCT =   [0.28, 0.35, 0.07, 0.35, 1.34, 3.52, 5.76, 8.30, 16.32, 31.62]
     df["td_estimate"] = np.interp(
         df["td_score"], _CALIBRATION_SCORE_POINTS, _CALIBRATION_ACTUAL_PCT
     )
