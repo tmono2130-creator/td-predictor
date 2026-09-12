@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from td_predictor_v5 import (
-    get_predictions, POSITIONS, build_matchups, load_schedule,
+    get_predictions, POSITIONS, build_matchups, load_schedule, get_final_scores,
     load_multi_season_stats, find_player_matches, player_vs_opponent_report,
     parlay_probability, auto_build_parlay,
 )
@@ -63,6 +63,13 @@ with tab_rankings:
     else:
         scored = st.session_state["scored"]
 
+        final_games = get_final_scores(load_schedule(int(season)), int(season), int(week))
+        if final_games:
+            with st.expander(f"🏁 {len(final_games)} game(s) already final this week", expanded=False):
+                for g in final_games:
+                    st.write(f"**{g['away_team']} {g['away_score']} — "
+                             f"{g['home_team']} {g['home_score']}**")
+
         if team_labels:
             wanted = {label.split("(")[-1].rstrip(")") for label in team_labels}
             view = scored[scored["team"].isin(wanted)].sort_values("td_score", ascending=False)
@@ -107,14 +114,19 @@ with tab_rankings:
                 chart_data = upcoming_view.nlargest(15, "td_score").set_index("player")["td_score"]
                 st.bar_chart(chart_data, horizontal=True)
 
-            display_cols = ["player", "team", "position", "opponent", "game_status", "td_score", "td_estimate", "games", "injury_status"]
+            display_cols = ["player", "team", "position", "opponent", "game_status", "actual_scored_td", "td_score", "td_estimate", "games", "injury_status"]
             display_df = view[display_cols].rename(columns={
                 "player": "Player", "team": "Team", "position": "Pos",
-                "opponent": "Opp", "game_status": "Game", "td_score": "Score", "td_estimate": "Est. TD%",
+                "opponent": "Opp", "game_status": "Game", "actual_scored_td": "Result",
+                "td_score": "Score", "td_estimate": "Est. TD%",
                 "games": "Sample", "injury_status": "Status",
             }).reset_index(drop=True)
             display_df["Game"] = display_df["Game"].apply(
                 lambda g: "✅ Final" if g == "Final" else "Upcoming"
+            )
+            display_df["Result"] = display_df.apply(
+                lambda r: ("🎯 Scored TD" if r["Result"] else "No TD") if r["Game"] == "✅ Final" else "—",
+                axis=1,
             )
             display_df["Sample"] = display_df["Sample"].apply(
                 lambda g: "🆕 No history" if g == 0 else f"{g} games"
@@ -320,6 +332,14 @@ with tab_parlay:
         # --- Auto-build -----------------------------------------------------
         with sub_auto:
             n_legs = st.slider("Number of legs", min_value=2, max_value=6, value=3)
+            volatility_choice = st.selectbox(
+                "What are you looking for?",
+                options=["Safest available", "Most Likely", "Moderate", "Long Shot", "Extreme Long Shot"],
+                help="'Safest available' just takes the highest-probability players for this "
+                     "many legs. The named bands intentionally pick LOWER-ranked players to "
+                     "land in that risk range — a 'Long Shot' 3-leg parlay won't just be your "
+                     "top 3 picks."
+            )
             one_per_team = st.checkbox(
                 "Avoid same-team legs (recommended)", value=True,
                 help="Keeps legs closer to statistically independent, so the combined "
@@ -329,11 +349,18 @@ with tab_parlay:
 
             if st.button("Suggest a parlay", use_container_width=True):
                 try:
-                    result = auto_build_parlay(scored, n_legs=n_legs, one_per_team=one_per_team)
+                    target = None if volatility_choice == "Safest available" else volatility_choice
+                    result = auto_build_parlay(
+                        scored, n_legs=n_legs, one_per_team=one_per_team, target_volatility=target
+                    )
                     m1, m2 = st.columns(2)
                     m1.metric("Combined probability (all legs hit)",
                               f"{result['combined_probability_pct']:.2f}%")
                     m2.metric("Volatility", result["volatility"])
+                    if result.get("target_missed"):
+                        st.warning(f"⚠️ Couldn't find a {n_legs}-leg combination that lands "
+                                   f"exactly in the '{volatility_choice}' range this week — "
+                                   f"this is the closest available match instead.")
                     if result["same_team_warning"]:
                         st.warning("⚠️ This suggestion includes same-team legs — see the "
                                    "note in 'Build your own' about why that overstates the "
@@ -343,8 +370,8 @@ with tab_parlay:
                         "probability_pct": "Est. TD%",
                     })
                     st.dataframe(legs_df, use_container_width=True, hide_index=True)
-                    st.caption("This is the highest TRUE PROBABILITY combination available "
-                               "this week per the model — not necessarily the best-value bet.")
+                    st.caption("This is a TRUE PROBABILITY estimate, not a payout-adjusted "
+                               "recommendation — see the tab's disclaimer above.")
                 except RuntimeError as e:
                     st.error(str(e))
 

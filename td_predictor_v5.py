@@ -1,5 +1,6 @@
 import argparse
 import os
+import random
 import sys
 from datetime import datetime
 
@@ -445,6 +446,57 @@ def get_already_played_teams(schedule, season, week):
     return set(played["home_team"].astype(str)) | set(played["away_team"].astype(str))
 
 
+def get_final_scores(schedule, season, week):
+    """
+    Final scores for games in this week that have already been played --
+    display-only, does NOT feed back into td_score. See the discussion:
+    using "who already scored today" to influence OTHER players' scores
+    this week would be an untested assumption with no backtest evidence,
+    so this stays informational rather than becoming a model input.
+    """
+    if schedule.empty:
+        return []
+    s = schedule.copy()
+    s["week"] = pd.to_numeric(s["week"], errors="coerce")
+    s = s[s["week"] == week]
+    score_cols = {"home_score", "away_score"}
+    if not score_cols.issubset(s.columns):
+        return []
+
+    games = []
+    for _, row in s.iterrows():
+        if pd.isna(row["home_score"]) or pd.isna(row["away_score"]):
+            continue  # not played/finished yet
+        games.append({
+            "home_team": str(row["home_team"]), "home_score": int(row["home_score"]),
+            "away_team": str(row["away_team"]), "away_score": int(row["away_score"]),
+        })
+    return games
+
+
+def load_actual_scorers_this_week(season, week):
+    """
+    Who actually scored a TD in games that have already been played this
+    week -- used only to annotate the board (display-only), same
+    reasoning as get_final_scores() above.
+    """
+    try:
+        stats = load_player_stats([season])
+    except Exception as e:
+        print(f"Could not load actual results: {e}")
+        return pd.DataFrame(columns=["player_id", "actual_scored_td"])
+
+    stats["week"] = clean_num(stats["week"])
+    wk = stats[stats["week"] == week].copy()
+    for col in ["receiving_tds", "rushing_tds"]:
+        if col not in wk.columns:
+            wk[col] = 0
+        wk[col] = clean_num(wk[col])
+    wk["actual_scored_td"] = (wk["receiving_tds"] + wk["rushing_tds"]) > 0
+    wk["player_id"] = wk["player_id"].astype(str)
+    return wk[["player_id", "actual_scored_td"]].drop_duplicates("player_id")
+
+
 def build_historical_player_profiles(stats, redzone):
     stats = stats.copy()
 
@@ -796,32 +848,107 @@ def volatility_label(combined_probability_pct):
         return "🔴 Extreme Long Shot"
 
 
-def auto_build_parlay(scored_df, n_legs=3, one_per_team=True):
+VOLATILITY_BANDS = {
+    "Most Likely": lambda p: p >= 15,
+    "Moderate": lambda p: 5 <= p < 15,
+    "Long Shot": lambda p: 1 <= p < 5,
+    "Extreme Long Shot": lambda p: p < 1,
+}
+VOLATILITY_BAND_CENTERS = {
+    "Most Likely": 30, "Moderate": 10, "Long Shot": 3, "Extreme Long Shot": 0.3,
+}
+
+
+def auto_build_parlay(scored_df, n_legs=3, one_per_team=True, target_volatility=None):
     """
-    Greedily builds the highest-TRUE-PROBABILITY N-leg parlay from this
-    week's board. Defaults to one player per team specifically to avoid
-    the same-team correlation problem in parlay_probability(). This
-    still says nothing about payout odds/value -- only the statistically
-    most likely combination to all hit, per the model.
+    Builds an N-leg parlay from this week's board. With target_volatility
+    left as None, greedily takes the highest-probability eligible players
+    (the safest possible parlay for that leg count).
+
+    With target_volatility set to one of VOLATILITY_BANDS' keys, this
+    deliberately picks LOWER-ranked players instead of the statistical
+    best -- that's the actual point of asking for "long shot" rather than
+    "most likely". It scans starting position in the ranked pool (0,
+    1, 2, ...) looking for the first N-player combination (respecting
+    one-per-team) whose combined probability lands in the requested
+    band. If no exact match exists for that leg count this week (e.g.
+    asking for "Most Likely" with 6 legs may simply not be achievable,
+    since more legs mechanically shrinks the combined probability),
+    it returns the closest miss and marks target_missed=True rather
+    than pretending it hit the target.
     """
     pool = scored_df
     if "game_status" in pool.columns:
         pool = pool[pool["game_status"] != "Final"]
-    pool = pool.sort_values("td_score", ascending=False)
-    picks = []
-    used_teams = set()
-    for _, r in pool.iterrows():
-        if one_per_team and r["team"] in used_teams:
-            continue
-        picks.append(r["player_id"])
-        used_teams.add(r["team"])
-        if len(picks) == n_legs:
-            break
+    pool = pool.sort_values("td_score", ascending=False).reset_index(drop=True)
 
-    if len(picks) < n_legs:
+    def build_from_offset(offset):
+        picks = []
+        used_teams = set()
+        for _, r in pool.iloc[offset:].iterrows():
+            if one_per_team and r["team"] in used_teams:
+                continue
+            picks.append(r["player_id"])
+            used_teams.add(r["team"])
+            if len(picks) == n_legs:
+                break
+        return picks
+
+    if target_volatility is None:
+        # Scan several near-top starting points instead of only the
+        # single best combo, so repeated clicks don't always return
+        # identical legs. Still stays close to "safest" -- only the
+        # top ~15 offsets are considered, not the whole pool.
+        max_offset = max(0, len(pool) - n_legs)
+        scan_limit = min(15, max_offset)
+        candidates = []
+        for offset in range(0, scan_limit + 1):
+            picks = build_from_offset(offset)
+            if len(picks) == n_legs:
+                candidates.append(picks)
+        if not candidates:
+            raise RuntimeError("Not enough eligible players this week to build a parlay of this size.")
+        chosen_picks = random.choice(candidates)
+        result = parlay_probability(scored_df, chosen_picks)
+        result["target_missed"] = False
+        return result
+
+    check = VOLATILITY_BANDS.get(target_volatility)
+    if check is None:
+        raise ValueError(f"Unknown volatility target: {target_volatility}")
+
+    # Gather EVERY combination that lands in the requested band (not just
+    # the first one found), then pick randomly among them -- otherwise
+    # "Long Shot" would always return the same single combo every click.
+    matches = []
+    near_misses = []
+    max_offset = max(0, len(pool) - n_legs)
+    for offset in range(0, max_offset + 1):
+        picks = build_from_offset(offset)
+        if len(picks) < n_legs:
+            continue
+        result = parlay_probability(scored_df, picks)
+        p = result["combined_probability_pct"]
+        if check(p):
+            matches.append(result)
+        else:
+            gap = abs(p - VOLATILITY_BAND_CENTERS[target_volatility])
+            near_misses.append((gap, result))
+
+    if matches:
+        chosen = random.choice(matches)
+        chosen["target_missed"] = False
+        return chosen
+
+    if not near_misses:
         raise RuntimeError("Not enough eligible players this week to build a parlay of this size.")
 
-    return parlay_probability(scored_df, picks)
+    # No exact match anywhere in the pool -- pick randomly among the 5
+    # closest misses rather than always the single closest one.
+    near_misses.sort(key=lambda x: x[0])
+    chosen = random.choice([r for _, r in near_misses[:5]])
+    chosen["target_missed"] = True
+    return chosen
 
 
 def print_rankings(df, top):
@@ -958,6 +1085,15 @@ def get_predictions(season, week, status_callback=None):
     scored["game_status"] = scored["team"].apply(
         lambda t: "Final" if t in played_teams else "Upcoming"
     )
+
+    if played_teams:
+        actual = load_actual_scorers_this_week(season, week)
+        scored["player_id"] = scored["player_id"].astype(str)
+        scored = scored.merge(actual, on="player_id", how="left")
+        scored["actual_scored_td"] = scored["actual_scored_td"].fillna(False)
+    else:
+        scored["actual_scored_td"] = False
+
     # Already-played games sink to the bottom regardless of score -- the
     # outcome's already known, there's nothing left to predict for them.
     scored = scored.sort_values(
