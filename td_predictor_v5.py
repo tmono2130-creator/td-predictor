@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ import nflreadpy
 #   5. Matchup split into pass-defense vs rush-defense allowed
 # ============================================================
 
-POSITIONS = {"RB", "FB", "WR", "TE"}
+POSITIONS = {"QB", "RB", "FB", "WR", "TE"}
 
 WEIGHTS = {
     # v4 -- rebuilt from correlation evidence averaged across BOTH the
@@ -297,31 +298,51 @@ def load_injury_report(season, week):
     gameday-inactives list published ~90 minutes before kickoff -- there's
     no free structured feed for that; the printed Friday status is the
     closest free, legitimate proxy.
+
+    Returns BOTH a player_id-based and a name-based lookup. The ID-based
+    join is tried first (more precise), but nflverse tables have a history
+    of using inconsistent ID column names across datasets (player_id vs
+    gsis_id vs nfl_id -- this exact issue bit the roster-team-update logic
+    earlier in this project). If the ID join comes back suspiciously
+    empty, get_predictions() falls back to a name match instead of
+    silently reporting everyone as "Active".
     """
     try:
         injuries = to_pandas(nflreadpy.load_injuries(seasons=[season]))
     except Exception as e:
         print(f"Injury report warning: {e}")
-        return pd.DataFrame(columns=["player_id", "injury_status"])
+        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
 
     if injuries.empty:
-        return pd.DataFrame(columns=["player_id", "injury_status"])
+        print("Injury report: source returned no rows at all for this season.")
+        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
 
     if "week" in injuries.columns:
+        before = len(injuries)
         injuries = injuries[pd.to_numeric(injuries["week"], errors="coerce") == week]
+        print(f"Injury report: {before} total rows for {season}, {len(injuries)} for week {week}.")
 
     id_col = next((c for c in ["player_id", "gsis_id", "nfl_id"] if c in injuries.columns), None)
+    name_col = next((c for c in ["full_name", "player_name", "player_display_name"]
+                      if c in injuries.columns), None)
     status_col = next((c for c in ["report_status", "game_status", "status"] if c in injuries.columns), None)
 
-    if id_col is None or status_col is None:
-        print(f"Injury report warning: unexpected columns {sorted(injuries.columns.tolist())}")
-        return pd.DataFrame(columns=["player_id", "injury_status"])
+    if status_col is None:
+        print(f"Injury report warning: no status column found. Columns were: "
+              f"{sorted(injuries.columns.tolist())}")
+        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
 
-    out = injuries[[id_col, status_col]].rename(
-        columns={id_col: "player_id", status_col: "injury_status"}
-    )
-    out["player_id"] = out["player_id"].astype(str)
-    out = out.dropna(subset=["injury_status"]).drop_duplicates("player_id", keep="last")
+    out = pd.DataFrame()
+    out["player_id"] = injuries[id_col].astype(str) if id_col else ""
+    out["player_name"] = injuries[name_col].astype(str).str.strip().str.lower() if name_col else ""
+    out["injury_status"] = injuries[status_col]
+    out = out.dropna(subset=["injury_status"])
+    out = out[out["injury_status"].astype(str).str.strip() != ""]
+    out = out.drop_duplicates("player_id", keep="last") if id_col else out.drop_duplicates("player_name", keep="last")
+
+    print(f"Injury report: {len(out)} players with a non-empty status this week "
+          f"(id_col={id_col}, name_col={name_col}, status_col={status_col}).")
+
     return out
 
 
@@ -384,6 +405,44 @@ def build_matchups(schedule, season, week):
             matchups[home] = away
             matchups[away] = home
     return matchups
+
+
+def get_already_played_teams(schedule, season, week):
+    """
+    Which teams' games for this week have already happened (Wed/Thu
+    games early in a week that's mostly Sun/Mon). build_matchups() only
+    filters by week number, so without this, a Thursday game's players
+    show up identically to Sunday's -- even though the outcome is
+    already known and there's nothing left to "predict."
+
+    This is a DATE-level check (not exact kickoff time), which is
+    accurate as soon as it's a different calendar day than the game --
+    the normal way you'd actually be checking mid-week. It won't be
+    perfectly precise for a game that's currently in progress today
+    (kickoff already passed but still same calendar date) -- that's a
+    known, minor edge case, not worth the timezone complexity to fix.
+    """
+    if schedule.empty or "week" not in schedule.columns or "gameday" not in schedule.columns:
+        return set()
+
+    s = schedule.copy()
+    s["week"] = pd.to_numeric(s["week"], errors="coerce")
+    s = s[s["week"] == week]
+    if "season_type" in s.columns:
+        regular = s[s["season_type"].astype(str).str.lower().isin(
+            ["reg", "regular", "regular season"])]
+        if not regular.empty:
+            s = regular
+
+    try:
+        s["gameday_parsed"] = pd.to_datetime(s["gameday"], errors="coerce").dt.date
+    except Exception as e:
+        print(f"Could not parse schedule dates for already-played check: {e}")
+        return set()
+
+    today = datetime.now().date()
+    played = s[s["gameday_parsed"] < today]
+    return set(played["home_team"].astype(str)) | set(played["away_team"].astype(str))
 
 
 def build_historical_player_profiles(stats, redzone):
@@ -709,12 +768,32 @@ def parlay_probability(scored_df, player_ids):
         })
 
     same_team_warning = rows["team"].duplicated().any()
+    combined_pct = combined * 100.0
 
     return {
         "legs": legs,
-        "combined_probability_pct": combined * 100.0,
+        "combined_probability_pct": combined_pct,
         "same_team_warning": bool(same_team_warning),
+        "volatility": volatility_label(combined_pct),
     }
+
+
+def volatility_label(combined_probability_pct):
+    """
+    Qualitative read on parlay risk, based on the actual computed
+    combined probability rather than a fixed leg-count rule -- more
+    honest, since a 3-leg parlay of low-probability players can be
+    riskier than a 4-leg of favorites. In practice this naturally tracks
+    leg count anyway, since more legs shrinks the combined number.
+    """
+    if combined_probability_pct >= 15:
+        return "🟢 Most Likely"
+    elif combined_probability_pct >= 5:
+        return "🟡 Moderate"
+    elif combined_probability_pct >= 1:
+        return "🟠 Long Shot"
+    else:
+        return "🔴 Extreme Long Shot"
 
 
 def auto_build_parlay(scored_df, n_legs=3, one_per_team=True):
@@ -725,7 +804,10 @@ def auto_build_parlay(scored_df, n_legs=3, one_per_team=True):
     still says nothing about payout odds/value -- only the statistically
     most likely combination to all hit, per the model.
     """
-    pool = scored_df.sort_values("td_score", ascending=False)
+    pool = scored_df
+    if "game_status" in pool.columns:
+        pool = pool[pool["game_status"] != "Final"]
+    pool = pool.sort_values("td_score", ascending=False)
     picks = []
     used_teams = set()
     for _, r in pool.iterrows():
@@ -821,7 +903,32 @@ def get_predictions(season, week, status_callback=None):
     status("Loading injury report...")
     injuries = load_injury_report(season, week)
     profiles["player_id"] = profiles["player_id"].astype(str)
-    profiles = profiles.merge(injuries, on="player_id", how="left")
+
+    id_matches = 0
+    if not injuries.empty and "player_id" in injuries.columns:
+        id_matches = profiles["player_id"].isin(injuries["player_id"]).sum()
+
+    if id_matches > 0:
+        profiles = profiles.merge(
+            injuries[["player_id", "injury_status"]], on="player_id", how="left"
+        )
+        status(f"Injury report: matched {id_matches} players by ID.")
+    elif not injuries.empty and "player_name" in injuries.columns:
+        # ID join found nothing even though the report has real rows --
+        # likely an ID-column mismatch (same issue that hit the roster
+        # team-update logic earlier). Fall back to a name match rather
+        # than silently reporting everyone as Active.
+        status("Injury report: ID join matched 0 players -- falling back to name match.")
+        profiles["_name_lower"] = profiles["player"].astype(str).str.strip().str.lower()
+        name_lookup = injuries.drop_duplicates("player_name", keep="last").set_index("player_name")["injury_status"]
+        profiles["injury_status"] = profiles["_name_lower"].map(name_lookup)
+        name_matches = profiles["injury_status"].notna().sum()
+        status(f"Injury report: matched {name_matches} players by name (fallback).")
+        profiles = profiles.drop(columns=["_name_lower"])
+    else:
+        status("Injury report: no usable data this run -- all players default to Active.")
+        profiles["injury_status"] = None
+
     profiles["injury_status"] = profiles["injury_status"].fillna("Active")
 
     profiles["opponent"] = profiles["team"].map(matchups)
@@ -847,7 +954,15 @@ def get_predictions(season, week, status_callback=None):
     if scored.empty:
         raise RuntimeError("No players could be scored.")
 
-    scored = scored.sort_values("td_score", ascending=False).reset_index(drop=True)
+    played_teams = get_already_played_teams(schedule, season, week)
+    scored["game_status"] = scored["team"].apply(
+        lambda t: "Final" if t in played_teams else "Upcoming"
+    )
+    # Already-played games sink to the bottom regardless of score -- the
+    # outcome's already known, there's nothing left to predict for them.
+    scored = scored.sort_values(
+        ["game_status", "td_score"], ascending=[False, False]
+    ).reset_index(drop=True)
     status("Done.")
     return scored, matchups
 

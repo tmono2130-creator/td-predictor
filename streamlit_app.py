@@ -76,31 +76,46 @@ with tab_rankings:
         if view.empty:
             st.warning("No players match this filter. Try a different team or position.")
         else:
-            # Top-3 callout cards -- an at-a-glance headline instead of
-            # having to scan the table for the top rows every time.
-            top3 = view.nlargest(3, "td_score").reset_index(drop=True)
-            medal = ["🥇", "🥈", "🥉"]
-            cols = st.columns(len(top3))
-            for i, col in enumerate(cols):
-                row = top3.iloc[i]
-                with col:
-                    st.metric(
-                        f"{medal[i]} {row['player']}",
-                        f"{row['td_estimate']:.1f}%",
-                        f"{row['team']} vs {row['opponent']}",
-                    )
+            # Only upcoming games get featured in the callout cards/chart --
+            # no point spotlighting someone whose game already happened.
+            upcoming_view = view[view["game_status"] != "Final"]
+            played_count = len(view) - len(upcoming_view)
+            if played_count:
+                st.caption(f"ℹ️ {played_count} player(s) from already-completed games this week "
+                           f"are excluded from the highlights below, but still visible in the "
+                           f"full table (sorted to the bottom, marked ✅ Final).")
 
-            # Quick visual bar chart of the top 15 -- easier to eyeball
-            # relative separation between players than scanning numbers.
-            chart_data = view.nlargest(15, "td_score").set_index("player")["td_score"]
-            st.bar_chart(chart_data, horizontal=True)
+            if upcoming_view.empty:
+                st.info("All games matching this filter have already been played this week.")
+            else:
+                # Top-3 callout cards -- an at-a-glance headline instead of
+                # having to scan the table for the top rows every time.
+                top3 = upcoming_view.nlargest(3, "td_score").reset_index(drop=True)
+                medal = ["🥇", "🥈", "🥉"]
+                cols = st.columns(len(top3))
+                for i, col in enumerate(cols):
+                    row = top3.iloc[i]
+                    with col:
+                        st.metric(
+                            f"{medal[i]} {row['player']}",
+                            f"{row['td_estimate']:.1f}%",
+                            f"{row['team']} vs {row['opponent']}",
+                        )
 
-            display_cols = ["player", "team", "position", "opponent", "td_score", "td_estimate", "games", "injury_status"]
+                # Quick visual bar chart of the top 15 -- easier to eyeball
+                # relative separation between players than scanning numbers.
+                chart_data = upcoming_view.nlargest(15, "td_score").set_index("player")["td_score"]
+                st.bar_chart(chart_data, horizontal=True)
+
+            display_cols = ["player", "team", "position", "opponent", "game_status", "td_score", "td_estimate", "games", "injury_status"]
             display_df = view[display_cols].rename(columns={
                 "player": "Player", "team": "Team", "position": "Pos",
-                "opponent": "Opp", "td_score": "Score", "td_estimate": "Est. TD%",
+                "opponent": "Opp", "game_status": "Game", "td_score": "Score", "td_estimate": "Est. TD%",
                 "games": "Sample", "injury_status": "Status",
             }).reset_index(drop=True)
+            display_df["Game"] = display_df["Game"].apply(
+                lambda g: "✅ Final" if g == "Final" else "Upcoming"
+            )
             display_df["Sample"] = display_df["Sample"].apply(
                 lambda g: "🆕 No history" if g == 0 else f"{g} games"
             )
@@ -267,7 +282,7 @@ with tab_parlay:
 
         # --- Manual parlay check -----------------------------------------
         with sub_manual:
-            options = scored.sort_values("td_score", ascending=False)
+            options = scored[scored["game_status"] != "Final"].sort_values("td_score", ascending=False)
             label_map = {
                 row["player_id"]: f"{row['player']} ({row['team']} vs {row['opponent']}) — {row['td_estimate']:.1f}%"
                 for _, row in options.iterrows()
@@ -282,8 +297,10 @@ with tab_parlay:
             if len(picks) >= 2:
                 try:
                     result = parlay_probability(scored, picks)
-                    st.metric("Combined probability (all legs hit)",
+                    m1, m2 = st.columns(2)
+                    m1.metric("Combined probability (all legs hit)",
                               f"{result['combined_probability_pct']:.2f}%")
+                    m2.metric("Volatility", result["volatility"])
                     if result["same_team_warning"]:
                         st.warning("⚠️ Two or more legs share the same team. Red-zone "
                                    "chances within one game are a limited shared resource, "
@@ -313,8 +330,10 @@ with tab_parlay:
             if st.button("Suggest a parlay", use_container_width=True):
                 try:
                     result = auto_build_parlay(scored, n_legs=n_legs, one_per_team=one_per_team)
-                    st.metric("Combined probability (all legs hit)",
+                    m1, m2 = st.columns(2)
+                    m1.metric("Combined probability (all legs hit)",
                               f"{result['combined_probability_pct']:.2f}%")
+                    m2.metric("Volatility", result["volatility"])
                     if result["same_team_warning"]:
                         st.warning("⚠️ This suggestion includes same-team legs — see the "
                                    "note in 'Build your own' about why that overstates the "
@@ -375,7 +394,7 @@ with tab_market:
             st.session_state["market_comparisons"] = []
 
         st.markdown("#### Add a player + the odds you're seeing")
-        options = scored.sort_values("td_score", ascending=False)
+        options = scored[scored["game_status"] != "Final"].sort_values("td_score", ascending=False)
         label_map = {
             row["player_id"]: f"{row['player']} ({row['team']} vs {row['opponent']}) — Model: {row['td_estimate']:.1f}%"
             for _, row in options.iterrows()
