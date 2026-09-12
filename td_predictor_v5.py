@@ -672,6 +672,76 @@ def inject_missing_roster_players(profiles, rosters, matchups):
     return pd.concat([profiles, pd.DataFrame(new_rows)], ignore_index=True)
 
 
+def parlay_probability(scored_df, player_ids):
+    """
+    Combined probability that ALL given players score a TD, using each
+    player's calibrated td_estimate as their individual probability.
+
+    IMPORTANT SIMPLIFICATION: this multiplies individual probabilities
+    together, which assumes independence between legs. That's roughly
+    fine for players on DIFFERENT teams/games. It's NOT fine for two
+    players on the SAME team -- red-zone opportunities within one game
+    are a shared, limited resource, so one teammate scoring makes the
+    other teammate scoring at least slightly less likely, not
+    unrelated. same_team_warning flags this rather than silently
+    overstating the combined probability.
+
+    This also does NOT know anything about payout odds -- it answers
+    "how likely is this, statistically," not "is this a good bet."
+    Those are different questions and this function only answers one.
+    """
+    ids = [str(p) for p in player_ids]
+    rows = scored_df[scored_df["player_id"].astype(str).isin(ids)].drop_duplicates("player_id")
+
+    found_ids = set(rows["player_id"].astype(str))
+    missing = set(ids) - found_ids
+    if missing:
+        raise ValueError(f"Could not find these player(s) in this week's board: {missing}")
+
+    legs = []
+    combined = 1.0
+    for _, r in rows.iterrows():
+        p = float(r["td_estimate"]) / 100.0
+        combined *= p
+        legs.append({
+            "player": r["player"], "team": r["team"], "opponent": r["opponent"],
+            "probability_pct": float(r["td_estimate"]),
+        })
+
+    same_team_warning = rows["team"].duplicated().any()
+
+    return {
+        "legs": legs,
+        "combined_probability_pct": combined * 100.0,
+        "same_team_warning": bool(same_team_warning),
+    }
+
+
+def auto_build_parlay(scored_df, n_legs=3, one_per_team=True):
+    """
+    Greedily builds the highest-TRUE-PROBABILITY N-leg parlay from this
+    week's board. Defaults to one player per team specifically to avoid
+    the same-team correlation problem in parlay_probability(). This
+    still says nothing about payout odds/value -- only the statistically
+    most likely combination to all hit, per the model.
+    """
+    pool = scored_df.sort_values("td_score", ascending=False)
+    picks = []
+    used_teams = set()
+    for _, r in pool.iterrows():
+        if one_per_team and r["team"] in used_teams:
+            continue
+        picks.append(r["player_id"])
+        used_teams.add(r["team"])
+        if len(picks) == n_legs:
+            break
+
+    if len(picks) < n_legs:
+        raise RuntimeError("Not enough eligible players this week to build a parlay of this size.")
+
+    return parlay_probability(scored_df, picks)
+
+
 def print_rankings(df, top):
     print(f"{'RK':<4}{'PLAYER':<24}{'TM':<5}{'POS':<5}{'OPP':<5}{'SCORE':>8}{'EST. TD%':>10}")
     print("-" * 78)
