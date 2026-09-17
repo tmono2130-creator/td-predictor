@@ -334,11 +334,12 @@ with tab_parlay:
             n_legs = st.slider("Number of legs", min_value=2, max_value=6, value=3)
             volatility_choice = st.selectbox(
                 "What are you looking for?",
-                options=["Safest available", "Most Likely", "Moderate", "Long Shot", "Extreme Long Shot"],
-                help="'Safest available' just takes the highest-probability players for this "
-                     "many legs. The named bands intentionally pick LOWER-ranked players to "
-                     "land in that risk range — a 'Long Shot' 3-leg parlay won't just be your "
-                     "top 3 picks."
+                options=["Most Likely", "Moderate", "Long Shot", "Extreme Long Shot"],
+                help="Graded relative to what's actually achievable for this many legs "
+                     "this week — 'Most Likely' is the safest quartile available, "
+                     "'Extreme Long Shot' the riskiest. Multiplying more legs together "
+                     "shrinks the raw percentage fast, so these are relative risk levels, "
+                     "not fixed probability thresholds."
             )
             one_per_team = st.checkbox(
                 "Avoid same-team legs (recommended)", value=True,
@@ -349,18 +350,23 @@ with tab_parlay:
 
             if st.button("Suggest a parlay", use_container_width=True):
                 try:
-                    target = None if volatility_choice == "Safest available" else volatility_choice
+                    recent = st.session_state.get("recent_parlays", [])
                     result = auto_build_parlay(
-                        scored, n_legs=n_legs, one_per_team=one_per_team, target_volatility=target
+                        scored, n_legs=n_legs, one_per_team=one_per_team,
+                        target_volatility=volatility_choice, avoid_player_sets=recent,
                     )
+                    shown = [leg["player"] for leg in result["legs"]]
+                    shown_ids = scored[scored["player"].isin(shown)]["player_id"].tolist()
+                    st.session_state["recent_parlays"] = ([shown_ids] + recent)[:3]
+
                     m1, m2 = st.columns(2)
                     m1.metric("Combined probability (all legs hit)",
                               f"{result['combined_probability_pct']:.2f}%")
                     m2.metric("Volatility", result["volatility"])
                     if result.get("target_missed"):
-                        st.warning(f"⚠️ Couldn't find a {n_legs}-leg combination that lands "
-                                   f"exactly in the '{volatility_choice}' range this week — "
-                                   f"this is the closest available match instead.")
+                        st.warning(f"⚠️ Couldn't find a {n_legs}-leg combination in the "
+                                   f"'{volatility_choice}' range this week — showing the "
+                                   f"closest available instead.")
                     if result["same_team_warning"]:
                         st.warning("⚠️ This suggestion includes same-team legs — see the "
                                    "note in 'Build your own' about why that overstates the "

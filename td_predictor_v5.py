@@ -783,7 +783,103 @@ def inject_missing_roster_players(profiles, rosters, matchups):
     return pd.concat([profiles, pd.DataFrame(new_rows)], ignore_index=True)
 
 
-def parlay_probability(scored_df, player_ids):
+VOLATILITY_ORDER = ["Most Likely", "Moderate", "Long Shot", "Extreme Long Shot"]
+VOLATILITY_EMOJI = {
+    "Most Likely": "🟢 Most Likely",
+    "Moderate": "🟡 Moderate",
+    "Long Shot": "🟠 Long Shot",
+    "Extreme Long Shot": "🔴 Extreme Long Shot",
+}
+
+
+def _eligible_pool(scored_df):
+    """Players actually available to parlay: excludes already-final games."""
+    pool = scored_df
+    if "game_status" in pool.columns:
+        pool = pool[pool["game_status"] != "Final"]
+    return pool.sort_values("td_score", ascending=False).reset_index(drop=True)
+
+
+def _raw_combined_pct(pool, player_ids):
+    """Just the multiplied probability -- no labeling, no recursion."""
+    ids = [str(p) for p in player_ids]
+    probs = pool[pool["player_id"].astype(str).isin(ids)]["td_estimate"].astype(float) / 100.0
+    if probs.empty:
+        return 0.0
+    return float(probs.prod() * 100.0)
+
+
+def _combos_by_offset(pool, n_legs, one_per_team=True):
+    """
+    Representative spread of achievable N-leg combos, from best (offset 0)
+    down through progressively lower-ranked players. Not an exhaustive
+    enumeration of every possible combination -- that's combinatorially
+    huge -- but a fair sample of the realistic best-to-worst range.
+    """
+    combos = []
+    max_offset = max(0, len(pool) - n_legs)
+    for offset in range(0, max_offset + 1):
+        picks, used_teams = [], set()
+        for _, r in pool.iloc[offset:].iterrows():
+            if one_per_team and r["team"] in used_teams:
+                continue
+            picks.append(r["player_id"])
+            used_teams.add(r["team"])
+            if len(picks) == n_legs:
+                break
+        if len(picks) == n_legs:
+            combos.append((_raw_combined_pct(pool, picks), picks))
+    return combos
+
+
+def get_volatility_cutoffs(scored_df, n_legs, one_per_team=True):
+    """
+    Quartile cutoffs of what's ACTUALLY achievable this week for this
+    leg count.
+
+    Why relative instead of fixed thresholds: multiplying legs together
+    shrinks probability fast. With individual probabilities capped around
+    31% by the calibration curve, even the three best players available
+    multiply to roughly 2-3% -- so a fixed "Most Likely = 15%+" rule was
+    literally unreachable for any 3+ leg parlay, and everything got
+    labeled "Long Shot" no matter what you picked. Grading relative to
+    the week's real achievable range means all four bands stay
+    meaningful at every leg count.
+    """
+    pool = _eligible_pool(scored_df)
+    combos = _combos_by_offset(pool, n_legs, one_per_team)
+    if not combos:
+        return None
+    values = sorted(c[0] for c in combos)
+    s = pd.Series(values)
+    return {"q75": s.quantile(0.75), "q50": s.quantile(0.50), "q25": s.quantile(0.25)}
+
+
+def volatility_label(combined_probability_pct, cutoffs=None):
+    """
+    Grades a parlay against what was achievable for its leg count this
+    week (see get_volatility_cutoffs). Falls back to absolute thresholds
+    only when no reference range is available.
+    """
+    if cutoffs is None:
+        if combined_probability_pct >= 15:
+            return VOLATILITY_EMOJI["Most Likely"]
+        elif combined_probability_pct >= 5:
+            return VOLATILITY_EMOJI["Moderate"]
+        elif combined_probability_pct >= 1:
+            return VOLATILITY_EMOJI["Long Shot"]
+        return VOLATILITY_EMOJI["Extreme Long Shot"]
+
+    if combined_probability_pct >= cutoffs["q75"]:
+        return VOLATILITY_EMOJI["Most Likely"]
+    elif combined_probability_pct >= cutoffs["q50"]:
+        return VOLATILITY_EMOJI["Moderate"]
+    elif combined_probability_pct >= cutoffs["q25"]:
+        return VOLATILITY_EMOJI["Long Shot"]
+    return VOLATILITY_EMOJI["Extreme Long Shot"]
+
+
+def parlay_probability(scored_df, player_ids, cutoffs=None):
     """
     Combined probability that ALL given players score a TD, using each
     player's calibrated td_estimate as their individual probability.
@@ -804,151 +900,89 @@ def parlay_probability(scored_df, player_ids):
     ids = [str(p) for p in player_ids]
     rows = scored_df[scored_df["player_id"].astype(str).isin(ids)].drop_duplicates("player_id")
 
-    found_ids = set(rows["player_id"].astype(str))
-    missing = set(ids) - found_ids
+    missing = set(ids) - set(rows["player_id"].astype(str))
     if missing:
         raise ValueError(f"Could not find these player(s) in this week's board: {missing}")
 
     legs = []
     combined = 1.0
     for _, r in rows.iterrows():
-        p = float(r["td_estimate"]) / 100.0
-        combined *= p
+        combined *= float(r["td_estimate"]) / 100.0
         legs.append({
             "player": r["player"], "team": r["team"], "opponent": r["opponent"],
             "probability_pct": float(r["td_estimate"]),
         })
 
-    same_team_warning = rows["team"].duplicated().any()
     combined_pct = combined * 100.0
+    if cutoffs is None:
+        cutoffs = get_volatility_cutoffs(scored_df, len(ids))
 
     return {
         "legs": legs,
         "combined_probability_pct": combined_pct,
-        "same_team_warning": bool(same_team_warning),
-        "volatility": volatility_label(combined_pct),
+        "same_team_warning": bool(rows["team"].duplicated().any()),
+        "volatility": volatility_label(combined_pct, cutoffs),
+        "target_missed": False,
     }
 
 
-def volatility_label(combined_probability_pct):
+def auto_build_parlay(scored_df, n_legs=3, one_per_team=True, target_volatility=None,
+                       avoid_player_sets=None):
     """
-    Qualitative read on parlay risk, based on the actual computed
-    combined probability rather than a fixed leg-count rule -- more
-    honest, since a 3-leg parlay of low-probability players can be
-    riskier than a 4-leg of favorites. In practice this naturally tracks
-    leg count anyway, since more legs shrinks the combined number.
+    Builds an N-leg parlay from this week's board.
+
+    target_volatility (one of VOLATILITY_ORDER) selects from the quartile
+    of achievable combos matching that risk level -- "Long Shot"
+    deliberately reaches for lower-ranked players rather than handing
+    back the safest combo. None = safest quartile.
+
+    Picks randomly among ALL qualifying combos rather than the first
+    match found, and avoid_player_sets lets the caller exclude recently
+    shown combinations so repeated clicks don't cycle through the same
+    two or three results.
     """
-    if combined_probability_pct >= 15:
-        return "🟢 Most Likely"
-    elif combined_probability_pct >= 5:
-        return "🟡 Moderate"
-    elif combined_probability_pct >= 1:
-        return "🟠 Long Shot"
-    else:
-        return "🔴 Extreme Long Shot"
-
-
-VOLATILITY_BANDS = {
-    "Most Likely": lambda p: p >= 15,
-    "Moderate": lambda p: 5 <= p < 15,
-    "Long Shot": lambda p: 1 <= p < 5,
-    "Extreme Long Shot": lambda p: p < 1,
-}
-VOLATILITY_BAND_CENTERS = {
-    "Most Likely": 30, "Moderate": 10, "Long Shot": 3, "Extreme Long Shot": 0.3,
-}
-
-
-def auto_build_parlay(scored_df, n_legs=3, one_per_team=True, target_volatility=None):
-    """
-    Builds an N-leg parlay from this week's board. With target_volatility
-    left as None, greedily takes the highest-probability eligible players
-    (the safest possible parlay for that leg count).
-
-    With target_volatility set to one of VOLATILITY_BANDS' keys, this
-    deliberately picks LOWER-ranked players instead of the statistical
-    best -- that's the actual point of asking for "long shot" rather than
-    "most likely". It scans starting position in the ranked pool (0,
-    1, 2, ...) looking for the first N-player combination (respecting
-    one-per-team) whose combined probability lands in the requested
-    band. If no exact match exists for that leg count this week (e.g.
-    asking for "Most Likely" with 6 legs may simply not be achievable,
-    since more legs mechanically shrinks the combined probability),
-    it returns the closest miss and marks target_missed=True rather
-    than pretending it hit the target.
-    """
-    pool = scored_df
-    if "game_status" in pool.columns:
-        pool = pool[pool["game_status"] != "Final"]
-    pool = pool.sort_values("td_score", ascending=False).reset_index(drop=True)
-
-    def build_from_offset(offset):
-        picks = []
-        used_teams = set()
-        for _, r in pool.iloc[offset:].iterrows():
-            if one_per_team and r["team"] in used_teams:
-                continue
-            picks.append(r["player_id"])
-            used_teams.add(r["team"])
-            if len(picks) == n_legs:
-                break
-        return picks
-
-    if target_volatility is None:
-        # Scan several near-top starting points instead of only the
-        # single best combo, so repeated clicks don't always return
-        # identical legs. Still stays close to "safest" -- only the
-        # top ~15 offsets are considered, not the whole pool.
-        max_offset = max(0, len(pool) - n_legs)
-        scan_limit = min(15, max_offset)
-        candidates = []
-        for offset in range(0, scan_limit + 1):
-            picks = build_from_offset(offset)
-            if len(picks) == n_legs:
-                candidates.append(picks)
-        if not candidates:
-            raise RuntimeError("Not enough eligible players this week to build a parlay of this size.")
-        chosen_picks = random.choice(candidates)
-        result = parlay_probability(scored_df, chosen_picks)
-        result["target_missed"] = False
-        return result
-
-    check = VOLATILITY_BANDS.get(target_volatility)
-    if check is None:
-        raise ValueError(f"Unknown volatility target: {target_volatility}")
-
-    # Gather EVERY combination that lands in the requested band (not just
-    # the first one found), then pick randomly among them -- otherwise
-    # "Long Shot" would always return the same single combo every click.
-    matches = []
-    near_misses = []
-    max_offset = max(0, len(pool) - n_legs)
-    for offset in range(0, max_offset + 1):
-        picks = build_from_offset(offset)
-        if len(picks) < n_legs:
-            continue
-        result = parlay_probability(scored_df, picks)
-        p = result["combined_probability_pct"]
-        if check(p):
-            matches.append(result)
-        else:
-            gap = abs(p - VOLATILITY_BAND_CENTERS[target_volatility])
-            near_misses.append((gap, result))
-
-    if matches:
-        chosen = random.choice(matches)
-        chosen["target_missed"] = False
-        return chosen
-
-    if not near_misses:
+    pool = _eligible_pool(scored_df)
+    combos = _combos_by_offset(pool, n_legs, one_per_team)
+    if not combos:
         raise RuntimeError("Not enough eligible players this week to build a parlay of this size.")
 
-    # No exact match anywhere in the pool -- pick randomly among the 5
-    # closest misses rather than always the single closest one.
-    near_misses.sort(key=lambda x: x[0])
-    chosen = random.choice([r for _, r in near_misses[:5]])
-    chosen["target_missed"] = True
-    return chosen
+    cutoffs = get_volatility_cutoffs(scored_df, n_legs, one_per_team)
+
+    if target_volatility is None:
+        target_volatility = "Most Likely"
+
+    if target_volatility not in VOLATILITY_ORDER:
+        raise ValueError(f"Unknown volatility target: {target_volatility}")
+
+    def band_of(value):
+        if value >= cutoffs["q75"]:
+            return "Most Likely"
+        elif value >= cutoffs["q50"]:
+            return "Moderate"
+        elif value >= cutoffs["q25"]:
+            return "Long Shot"
+        return "Extreme Long Shot"
+
+    matches = [picks for value, picks in combos if band_of(value) == target_volatility]
+    target_missed = False
+
+    if not matches:
+        # Shouldn't normally happen with quartile bands, but stay honest
+        # if it does rather than silently returning something else.
+        target_missed = True
+        matches = [picks for _, picks in combos]
+
+    # Avoid repeating what was just shown, when there's an alternative.
+    if avoid_player_sets:
+        avoid = [frozenset(str(p) for p in s) for s in avoid_player_sets]
+        fresh = [m for m in matches if frozenset(str(p) for p in m) not in avoid]
+        if fresh:
+            matches = fresh
+
+    chosen = random.choice(matches)
+    result = parlay_probability(scored_df, chosen, cutoffs=cutoffs)
+    result["target_missed"] = target_missed
+    return result
 
 
 def print_rankings(df, top):
