@@ -4,6 +4,64 @@ import random
 import sys
 from datetime import datetime
 
+try:
+    import joblib
+    _JOBLIB_AVAILABLE = True
+except ImportError:
+    _JOBLIB_AVAILABLE = False
+
+_FITTED_MODEL_CACHE = {}
+
+
+def apply_fitted_model(scored, status=print, model_path="model_v6.joblib"):
+    """
+    LAYER 6: if a trained model exists (train_final_model.py), use it to
+    set td_score/td_estimate instead of the hand-weighted composite +
+    calibration lookup. Falls back silently to the existing composite
+    (already computed by score_players() upstream) if:
+      - the model file doesn't exist yet (nobody's trained one)
+      - joblib/scikit-learn aren't installed
+      - the model errors for any reason (e.g. a feature it expects is
+        missing from this run)
+
+    This means the app works before you ever train a model, and adopting
+    the fitted model is a drop-in swap, not a breaking change.
+    """
+    if not _JOBLIB_AVAILABLE:
+        status("Layer 6 model: scikit-learn/joblib not installed -- using composite scoring.")
+        return scored
+
+    if not os.path.exists(model_path):
+        status(f"Layer 6 model: no {model_path} found yet -- using composite scoring. "
+               f"(Run train_final_model.py to enable the fitted model.)")
+        return scored
+
+    try:
+        if model_path not in _FITTED_MODEL_CACHE:
+            _FITTED_MODEL_CACHE[model_path] = joblib.load(model_path)
+        bundle = _FITTED_MODEL_CACHE[model_path]
+
+        feats = bundle["features"]
+        missing = [f for f in feats if f not in scored.columns]
+        for f in missing:
+            scored[f] = None  # imputer will fill from training-set medians
+
+        X = bundle["imputer"].transform(scored[feats])
+        X_scaled = bundle["scaler"].transform(X)
+        prob = bundle["model"].predict_proba(X_scaled)[:, 1]
+
+        scored["td_score"] = prob * 100.0
+        scored["td_estimate"] = prob * 100.0
+        status(f"Layer 6 model: applied fitted model "
+               f"(trained on seasons {bundle.get('trained_on_seasons')}, "
+               f"{bundle.get('n_rows', '?')} rows).")
+    except Exception as e:
+        status(f"Layer 6 model: error applying fitted model ({e}) -- "
+               f"falling back to composite scoring.")
+
+    return scored
+
+
 import numpy as np
 import pandas as pd
 import nflreadpy
@@ -495,6 +553,89 @@ def load_actual_scorers_this_week(season, week):
     wk["actual_scored_td"] = (wk["receiving_tds"] + wk["rushing_tds"]) > 0
     wk["player_id"] = wk["player_id"].astype(str)
     return wk[["player_id", "actual_scored_td"]].drop_duplicates("player_id")
+
+
+def build_game_context(schedule, season, week):
+    """
+    LAYER 3 features: home/away and rest days, per team, for this week.
+
+    These are added as FEATURE COLUMNS only -- they do not touch
+    td_score. Whether they actually earn predictive weight gets decided
+    by the fitted model in model_v6.py against held-out data, not by
+    anyone's assumption (mine or the user's). That's the point of
+    building them as candidate features rather than hand-weighting them.
+    """
+    if schedule.empty:
+        return pd.DataFrame(columns=["team", "is_home", "days_rest"])
+
+    s = schedule.copy()
+    s["week"] = pd.to_numeric(s["week"], errors="coerce")
+    if "gameday" in s.columns:
+        s["gameday_parsed"] = pd.to_datetime(s["gameday"], errors="coerce")
+    else:
+        s["gameday_parsed"] = pd.NaT
+
+    this_week = s[s["week"] == week]
+    rows = []
+    for _, g in this_week.iterrows():
+        for team, is_home in [(g["home_team"], 1), (g["away_team"], 0)]:
+            team = str(team)
+            prior = s[
+                (s["week"] < week)
+                & ((s["home_team"].astype(str) == team) | (s["away_team"].astype(str) == team))
+            ]
+            days_rest = None
+            if not prior.empty and pd.notna(g["gameday_parsed"]):
+                last_game = prior["gameday_parsed"].max()
+                if pd.notna(last_game):
+                    days_rest = (g["gameday_parsed"] - last_game).days
+            rows.append({"team": team, "is_home": is_home, "days_rest": days_rest})
+
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        median_rest = out["days_rest"].median()
+        out["days_rest"] = out["days_rest"].fillna(median_rest if pd.notna(median_rest) else 7)
+    return out
+
+
+def build_scoring_environment(schedule, season, week, lookback_weeks=6):
+    """
+    LAYER 3: actual recent points scored / points allowed per team, from
+    real game results -- NOT Vegas totals (no market data, consistent
+    with the rest of this tool).
+
+    This is a different construction than the old team_environment
+    component, which summed season-long offensive TDs and tested as
+    noise (correlation ~0.03 across two seasons). Whether framing it as
+    recent points-per-game does better is an empirical question for
+    model_v6.py to answer.
+    """
+    empty = pd.DataFrame(columns=["team", "recent_ppg", "recent_points_allowed"])
+    if schedule.empty:
+        return empty
+    if not {"home_score", "away_score", "home_team", "away_team", "week"}.issubset(schedule.columns):
+        return empty
+
+    s = schedule.copy()
+    s["week"] = pd.to_numeric(s["week"], errors="coerce")
+    s = s[(s["week"] < week) & (s["week"] >= week - lookback_weeks)]
+    s = s.dropna(subset=["home_score", "away_score"])
+    if s.empty:
+        return empty
+
+    records = []
+    for _, g in s.iterrows():
+        records.append({"team": str(g["home_team"]), "scored": float(g["home_score"]),
+                        "allowed": float(g["away_score"])})
+        records.append({"team": str(g["away_team"]), "scored": float(g["away_score"]),
+                        "allowed": float(g["home_score"])})
+
+    df = pd.DataFrame(records)
+    agg = df.groupby("team").agg(
+        recent_ppg=("scored", "mean"),
+        recent_points_allowed=("allowed", "mean"),
+    ).reset_index()
+    return agg
 
 
 def build_historical_player_profiles(stats, redzone):
@@ -1127,6 +1268,36 @@ def get_predictions(season, week, status_callback=None):
         scored["actual_scored_td"] = scored["actual_scored_td"].fillna(False)
     else:
         scored["actual_scored_td"] = False
+
+    # LAYER 3 candidate features -- attached for the fitted model to
+    # evaluate, deliberately NOT folded into td_score.
+    status("Adding game-context features...")
+    context = build_game_context(schedule, season, week)
+    if not context.empty:
+        scored = scored.merge(context, on="team", how="left")
+    else:
+        scored["is_home"], scored["days_rest"] = None, None
+
+    environment = build_scoring_environment(schedule, season, week)
+    if not environment.empty:
+        scored = scored.merge(environment, on="team", how="left")
+        opp_env = environment.rename(columns={
+            "team": "opponent",
+            "recent_ppg": "opp_recent_ppg",
+            "recent_points_allowed": "opp_recent_points_allowed",
+        })
+        scored = scored.merge(opp_env, on="opponent", how="left")
+    else:
+        for col in ["recent_ppg", "recent_points_allowed",
+                     "opp_recent_ppg", "opp_recent_points_allowed"]:
+            scored[col] = None
+
+    # LAYER 6 -- use the fitted model if one has been trained (see
+    # train_final_model.py), otherwise fall back to the original
+    # hand-weighted composite + calibration curve. This keeps the app
+    # working even before a model file exists, and makes the fitted
+    # model a drop-in upgrade rather than a hard dependency.
+    scored = apply_fitted_model(scored, status)
 
     # Already-played games sink to the bottom regardless of score -- the
     # outcome's already known, there's nothing left to predict for them.
