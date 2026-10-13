@@ -6,6 +6,7 @@ from td_predictor_v5 import (
     parlay_probability, auto_build_parlay,
 )
 from team_names import TEAM_NAMES
+from game_breakdown import build_game_breakdown, list_week_games
 
 st.set_page_config(page_title="TD Likelihood Predictor", layout="wide")
 
@@ -37,8 +38,9 @@ if run:
         status_box.empty()
         st.error(f"Something went wrong: {e}")
 
-tab_rankings, tab_lookup, tab_parlay, tab_market = st.tabs(
-    ["📊 Weekly Rankings", "🔎 Player Lookup", "🎯 Parlay Builder", "📈 Market Check"]
+tab_rankings, tab_lookup, tab_parlay, tab_market, tab_breakdown = st.tabs(
+    ["📊 Weekly Rankings", "🔎 Player Lookup", "🎯 Parlay Builder", "📈 Market Check",
+     "🔬 Game Breakdown"]
 )
 
 # ===========================================================================
@@ -480,3 +482,103 @@ with tab_market:
                 st.rerun()
         else:
             st.info("Add a player above to start comparing.")
+
+
+# ===========================================================================
+# TAB 5 — Game Breakdown
+#
+# Display-only scouting report. Nothing here feeds the fitted model, the
+# rankings, or any TD score -- it's the hard numbers behind a matchup so
+# you can apply your own judgment. Heavy loads are gated behind a button
+# and cached, so this tab costs nothing until you ask for a breakdown.
+# ===========================================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_week_games(season_, week_):
+    return list_week_games(int(season_), int(week_))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_breakdown(season_, week_, away_, home_, lookback_):
+    return build_game_breakdown(int(season_), int(week_), away_, home_, int(lookback_),
+                                status=lambda m: None)
+
+
+with tab_breakdown:
+    st.caption(
+        "A scouting report for one game, built from nflverse play-by-play. It is **separate "
+        "from the model** — it never changes a score or ranking. Use it to see the usage and "
+        "scoring patterns behind a matchup and make your own call."
+    )
+
+    week_games = cached_week_games(season, week)
+    if not week_games:
+        st.info("No schedule found for this season/week yet.")
+    else:
+        labels = [f"{a} @ {h}" for a, h in week_games]
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            picked = st.selectbox("Game", labels, key="bd_game")
+        with c2:
+            lookback = st.slider("Games of history", 3, 10, 6, key="bd_lookback")
+
+        if st.button("Build breakdown", use_container_width=True, key="bd_build"):
+            away_t, home_t = week_games[labels.index(picked)]
+            try:
+                with st.spinner("Loading play-by-play — the first build takes a minute..."):
+                    data = cached_breakdown(season, week, away_t, home_t, lookback)
+                st.session_state["breakdown"] = {"data": data, "season": int(season), "week": int(week)}
+            except Exception as e:
+                st.session_state.pop("breakdown", None)
+                st.error(f"Couldn't build this breakdown: {e}")
+
+        bd = st.session_state.get("breakdown")
+        if bd:
+            data = bd["data"]
+            away_t, home_t = data["teams"]
+            meta = data["meta"]
+
+            st.subheader(f"{away_t} @ {home_t} — Week {bd['week']}, {bd['season']}")
+            st.caption(
+                f"Window: each team's last {meta['lookback']} regular-season games before this week "
+                f"({away_t}: {meta['games_used'][away_t]} games, {meta['prior_season_games'][away_t]} from "
+                f"last season · {home_t}: {meta['games_used'][home_t]} games, "
+                f"{meta['prior_season_games'][home_t]} from last season). Samples are small — read the "
+                f"counts, not just the percentages."
+            )
+
+            st.markdown("#### 📌 Stats that stand out")
+            if data["flags"]:
+                for flag in data["flags"]:
+                    st.markdown(f"- {flag}")
+            else:
+                st.caption("Nothing crossed the automatic thresholds for this game.")
+            st.caption("Flags use fixed thresholds and minimum sample sizes. They are prompts for your "
+                       "own judgment, not model output.")
+
+            st.markdown("#### Team scoring profile")
+            st.markdown("**Offense — how they score**")
+            st.dataframe(data["offense"], hide_index=True, use_container_width=True)
+            st.markdown("**Defense — what they allow**")
+            st.dataframe(data["defense"], hide_index=True, use_container_width=True)
+
+            st.markdown("#### Players by position group")
+            tab_away, tab_home = st.tabs([away_t, home_t])
+            for tab_obj, team_code in [(tab_away, away_t), (tab_home, home_t)]:
+                with tab_obj:
+                    for group in ["RB", "WR", "TE", "QB"]:
+                        gdf = data["players"][team_code][group]
+                        if not gdf.empty:
+                            st.markdown(f"**{group}**")
+                            st.dataframe(gdf, hide_index=True, use_container_width=True)
+                    inj = data["injuries"][team_code]
+                    if not inj.empty:
+                        st.markdown("**🩹 Injury impact — usage tied to flagged players**")
+                        st.dataframe(inj, hide_index=True, use_container_width=True)
+
+            st.caption(
+                "RZ = inside the opponent's 20 · GL = inside the 5 · RZ share is carries for RB/QB and "
+                "targets for WR/TE · 1st TD counts the game's first rushing/receiving TD over the last "
+                "two seasons (defensive and special-teams TDs ignored) · Status comes from the official "
+                "injury report and doesn't reflect gameday inactives."
+            )
