@@ -1,0 +1,170 @@
+"""
+EXPORT JSON — runs your Python model and writes the JSON files the website reads.
+
+Why this exists: the model (nflreadpy, pandas, the fitted .joblib) can only run
+in Python. The website is Next.js/Node. Instead of hosting a heavy Python
+server, this script does the heavy work on your machine (or a scheduled job)
+and writes two small static files the site simply displays:
+
+    board.json        the week's ranked player board (fitted model if present)
+    breakdowns.json   a scouting report for EVERY game that week
+
+The website needs no Python at all after this. Re-run it whenever you want the
+site refreshed -- after injury reports update, after a week's games finish, and
+after retraining the model (train_final_model.py).
+
+USAGE:
+    python export_json.py --season 2026 --week 6 --out ../my-site/public/data
+    python export_json.py --season 2026 --out ../my-site/public/data     # week auto-detected
+    python export_json.py --season 2026 --week 6 --skip-breakdowns       # board only (fast)
+
+Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
+(the model file is looked up relative to where you run it).
+"""
+
+import argparse
+import json
+import os
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from td_predictor_v5 import get_predictions, get_final_scores, load_schedule
+from game_breakdown import load_breakdown_context, build_game_from_context, list_week_games
+
+BOARD_COLUMNS = [
+    "player_id", "player", "team", "position", "opponent",
+    "td_score", "td_estimate", "games", "injury_status",
+    "game_status", "actual_scored_td", "is_home",
+]
+
+
+def df_records(df):
+    """DataFrame -> plain JSON-safe list of dicts (NaN becomes null)."""
+    if df is None or len(df) == 0:
+        return []
+    return json.loads(df.to_json(orient="records"))
+
+
+def write_json(path, payload):
+    """Write atomically so the site never serves a half-written file."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, separators=(",", ":"), allow_nan=False)
+    os.replace(tmp, path)
+    print(f"  wrote {path} ({os.path.getsize(path) / 1024:.0f} KB)")
+
+
+def detect_current_week(season):
+    """The first week that still has a game today or later (rolls over after Monday night)."""
+    sched = load_schedule(season)
+    if sched is None or sched.empty or "gameday" not in sched.columns:
+        raise RuntimeError("Could not detect the current week -- pass --week explicitly.")
+    s = sched.copy()
+    s["week"] = pd.to_numeric(s["week"], errors="coerce")
+    if "game_type" in s.columns:
+        reg = s[s["game_type"].astype(str).str.upper() == "REG"]
+        if not reg.empty:
+            s = reg
+    s["_day"] = pd.to_datetime(s["gameday"], errors="coerce").dt.date
+    upcoming = s[s["_day"] >= datetime.now().date()]
+    if upcoming.empty:
+        return int(s["week"].max())
+    return int(upcoming["week"].min())
+
+
+def board_payload(scored, season, week, model_in_use, final_games):
+    cols = [c for c in BOARD_COLUMNS if c in scored.columns]
+    rows = scored[cols].copy()
+    for c in ("td_score", "td_estimate"):
+        rows[c] = pd.to_numeric(rows[c], errors="coerce").round(3)
+    if "games" in rows.columns:
+        rows["games"] = pd.to_numeric(rows["games"], errors="coerce").fillna(0).astype(int)
+    if "actual_scored_td" in rows.columns:
+        rows["actual_scored_td"] = rows["actual_scored_td"].fillna(False).astype(bool)
+    return {
+        "meta": {
+            "season": int(season), "week": int(week),
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": model_in_use,
+            "final_games": final_games,
+        },
+        "rows": df_records(rows),
+    }
+
+
+def breakdown_payload(result):
+    return {
+        "teams": result["teams"],
+        "offense": df_records(result["offense"]),
+        "defense": df_records(result["defense"]),
+        "players": {t: {g: df_records(df) for g, df in groups.items()}
+                    for t, groups in result["players"].items()},
+        "injuries": {t: df_records(df) for t, df in result["injuries"].items()},
+        "flags": result["flags"],
+        "meta": result["meta"],
+    }
+
+
+def export_board(season, week, out_dir):
+    print(f"\n[board] {season} week {week}")
+    messages = []
+    scored, _ = get_predictions(season, week, status_callback=messages.append)
+    model_in_use = "fitted" if any("applied fitted model" in m for m in messages) else "composite"
+    print(f"  model in use: {model_in_use}")
+    if model_in_use == "composite":
+        print("  NOTE: no fitted model was applied (model_v6.joblib not found next to where you "
+              "ran this, or scikit-learn missing). The site will show composite-model numbers.")
+    final_games = get_final_scores(load_schedule(season), season, week)
+    payload = board_payload(scored, season, week, model_in_use, final_games)
+    write_json(os.path.join(out_dir, "board.json"), payload)
+    return payload
+
+
+def export_breakdowns(season, week, lookback, out_dir):
+    print(f"\n[breakdowns] {season} week {week}, last {lookback} games per team")
+    games = list_week_games(season, week)
+    if not games:
+        raise RuntimeError("No games found for this week.")
+    ctx = load_breakdown_context(season, week, lookback)   # heavy load happens ONCE
+    out, errors = {}, {}
+    for away, home in games:
+        key = f"{away}@{home}"
+        try:
+            out[key] = breakdown_payload(build_game_from_context(ctx, away, home))
+            print(f"  built {key}")
+        except Exception as e:  # one bad game must not sink the rest
+            errors[key] = str(e)
+            print(f"  SKIPPED {key}: {e}")
+    payload = {
+        "meta": {"season": int(season), "week": int(week), "lookback": int(lookback),
+                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+        "games": out,
+        "errors": errors,
+    }
+    write_json(os.path.join(out_dir, "breakdowns.json"), payload)
+    return payload
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Export model output as JSON for the website.")
+    ap.add_argument("--season", type=int, required=True)
+    ap.add_argument("--week", type=int, default=None, help="Omit to auto-detect the current week.")
+    ap.add_argument("--out", type=str, default="./public/data", help="Folder the site serves data from.")
+    ap.add_argument("--lookback", type=int, default=6, help="Games of history per team for breakdowns.")
+    ap.add_argument("--skip-breakdowns", action="store_true", help="Board only (much faster).")
+    a = ap.parse_args()
+
+    week = a.week if a.week is not None else detect_current_week(a.season)
+    if a.week is None:
+        print(f"Auto-detected current week: {week}")
+
+    export_board(a.season, week, a.out)
+    if not a.skip_breakdowns:
+        export_breakdowns(a.season, week, a.lookback, a.out)
+    print("\nDone. Deploy/refresh the site to publish the new data.")
+
+
+if __name__ == "__main__":
+    main()

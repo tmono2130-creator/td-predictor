@@ -434,9 +434,18 @@ def build_flags(teams, frames, profile):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, status=print):
+def load_breakdown_context(season, week, lookback_games=6, status=print, require_teams=None):
+    """
+    The heavy, league-wide part of a breakdown: schedules, play-by-play,
+    team profiles, player info, first-TD history, injuries. Done ONCE so
+    that many games can be built from it (the website export builds every
+    game of a week from a single load instead of reloading two seasons of
+    play-by-play per game).
+
+    require_teams: fail fast (before the slow play-by-play load) if any of
+    these teams has no completed games before this week.
+    """
     prior = season - 1
-    teams = [away_team, home_team]
 
     status("Loading schedules...")
     schedule = load_schedules([prior, season])
@@ -444,7 +453,7 @@ def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, s
         raise RuntimeError("Could not load schedules.")
     team_games = build_team_games(schedule)
     window = team_windows(team_games, season, week, lookback_games)
-    for t in teams:
+    for t in (require_teams or []):
         if window[window["team"] == t].empty:
             raise RuntimeError(f"No completed games found for {t} before week {week}.")
 
@@ -454,7 +463,6 @@ def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, s
     status("Computing team profiles...")
     per_game = per_game_team_metrics(pbp, window)
     profile = aggregate_team_profile(per_game)
-    offense_tbl, defense_tbl = profile_tables(profile, teams)
 
     status("Computing player usage...")
     info = load_player_info([prior, season])
@@ -469,12 +477,30 @@ def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, s
             injury_by_name = dict(zip(injuries["player_name"].astype(str).str.lower(),
                                       injuries["injury_status"]))
 
-    frames = {t: build_player_frames(pbp, window, t, info, injury_by_id, injury_by_name, first_td)
+    return {
+        "season": season, "week": week, "lookback": lookback_games,
+        "window": window, "pbp": pbp, "profile": profile, "info": info,
+        "first_td": first_td, "injury_by_id": injury_by_id, "injury_by_name": injury_by_name,
+    }
+
+
+def build_game_from_context(ctx, away_team, home_team):
+    """Cheap per-game step once the context is loaded."""
+    teams = [away_team, home_team]
+    window, season = ctx["window"], ctx["season"]
+    for t in teams:
+        if window[window["team"] == t].empty:
+            raise RuntimeError(f"No completed games found for {t} before week {ctx['week']}.")
+
+    offense_tbl, defense_tbl = profile_tables(ctx["profile"], teams)
+
+    frames = {t: build_player_frames(ctx["pbp"], window, t, ctx["info"], ctx["injury_by_id"],
+                                     ctx["injury_by_name"], ctx["first_td"])
               for t in teams}
 
     players = {t: {g: _group_view(frames[t], g) for g in GROUP_ORDER} for t in teams}
     injury_tables = {t: injury_view(frames[t]) for t in teams}
-    flags = build_flags(teams, frames, profile)
+    flags = build_flags(teams, frames, ctx["profile"])
 
     games_used = {t: int((window["team"] == t).sum()) for t in teams}
     prior_games = {t: int(((window["team"] == t) & (window["season"] < season)).sum()) for t in teams}
@@ -483,8 +509,14 @@ def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, s
         "teams": teams, "offense": offense_tbl, "defense": defense_tbl,
         "players": players, "injuries": injury_tables, "flags": flags,
         "meta": {"games_used": games_used, "prior_season_games": prior_games,
-                 "lookback": lookback_games},
+                 "lookback": ctx["lookback"]},
     }
+
+
+def build_game_breakdown(season, week, away_team, home_team, lookback_games=6, status=print):
+    ctx = load_breakdown_context(season, week, lookback_games, status,
+                                 require_teams=[away_team, home_team])
+    return build_game_from_context(ctx, away_team, home_team)
 
 
 if __name__ == "__main__":

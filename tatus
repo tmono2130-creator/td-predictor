@@ -1,0 +1,20 @@
+ api.py                             |  154 [32m+[m
+ requirements.txt                   |    4 [32m+[m[31m-[m
+ td-predictor-web/.gitignore        |   41 [32m+[m
+ td-predictor-web/AGENTS.md         |    9 [32m+[m
+ td-predictor-web/README.md         |   36 [32m+[m
+ td-predictor-web/app/favicon.ico   |  Bin [31m0[m -> [32m15086[m bytes
+ td-predictor-web/app/globals.css   |   26 [32m+[m
+ td-predictor-web/app/layout.tsx    |   29 [32m+[m
+ td-predictor-web/app/page.tsx      |  645 [32m++++[m
+ td-predictor-web/eslint.config.mjs |   18 [32m+[m
+ td-predictor-web/next.config.ts    |   20 [32m+[m
+ td-predictor-web/package-lock.json | 6865 [32m++++++++++++++++++++++++++++++++++++[m
+ td-predictor-web/package.json      |   26 [32m+[m
+ td-predictor-web/public/file.svg   |    1 [32m+[m
+ td-predictor-web/public/globe.svg  |    1 [32m+[m
+ td-predictor-web/public/next.svg   |    1 [32m+[m
+ td-predictor-web/public/vercel.svg |    1 [32m+[m
+ td-predictor-web/public/window.svg |    1 [32m+[m
+ td-predictor-web/tsconfig.json     |   34 [32m+[m
+ 19 files changed, 7911 insertions(+), 1 deletion(-)
