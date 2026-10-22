@@ -26,6 +26,8 @@ Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
 import argparse
 import json
 import os
+import shutil
+import tempfile
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -143,7 +145,7 @@ def week_output_dir(out_dir, season, week):
     return os.path.join(out_dir, "seasons", str(int(season)), f"week-{int(week)}")
 
 
-def update_manifest(out_dir, season, week, board, breakdowns=None):
+def update_manifest(out_dir, season, week, board, breakdowns=None, snapshot_id="snapshot"):
     """Publish the manifest last; it is the pointer to a complete weekly snapshot."""
     manifest_path = os.path.join(out_dir, "manifest.json")
     if os.path.exists(manifest_path):
@@ -160,11 +162,12 @@ def update_manifest(out_dir, season, week, board, breakdowns=None):
     previous = next((w for w in manifest["weeks"] if (
         isinstance(w, dict) and w.get("season") == int(season) and w.get("week") == int(week)
     )), {})
-    breakdown_path = f"/data/seasons/{int(season)}/week-{int(week)}/breakdowns.json"
+    snapshot_root = f"/data/seasons/{int(season)}/week-{int(week)}/{snapshot_id}"
+    breakdown_path = f"{snapshot_root}/breakdowns.json"
     entry = {
         "season": int(season),
         "week": int(week),
-        "board": f"/data/seasons/{int(season)}/week-{int(week)}/board.json",
+        "board": f"{snapshot_root}/board.json",
         "breakdowns": breakdown_path if breakdowns is not None else previous.get("breakdowns"),
         "generated_at": board["meta"]["generated_at"],
         "model": board["meta"]["model"],
@@ -248,12 +251,25 @@ def main():
     if a.week is None:
         print(f"Auto-detected current week: {week}")
 
-    board = export_board(a.season, week, a.out)
-    breakdowns = None
-    if not a.skip_breakdowns:
-        breakdowns = export_breakdowns(a.season, week, a.lookback, a.out)
-    update_manifest(a.out, a.season, week, board, breakdowns)
-    print(f"\nPublished season {a.season}, week {week} to manifest.json.")
+    os.makedirs(a.out, exist_ok=True)
+    # Build a complete snapshot off to the side. Existing manifest entries keep
+    # pointing at immutable files if any model or breakdown step fails.
+    with tempfile.TemporaryDirectory(prefix=".weekly-export-", dir=a.out) as staging_root:
+        board = export_board(a.season, week, staging_root)
+        breakdowns = None
+        if not a.skip_breakdowns:
+            breakdowns = export_breakdowns(a.season, week, a.lookback, staging_root)
+
+        snapshot_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        staged_week = week_output_dir(staging_root, a.season, week)
+        final_week_root = week_output_dir(a.out, a.season, week)
+        final_snapshot = os.path.join(final_week_root, snapshot_id)
+        os.makedirs(final_week_root, exist_ok=True)
+        os.replace(staged_week, final_snapshot)
+
+    # The manifest is the single publication pointer and is updated last.
+    update_manifest(a.out, a.season, week, board, breakdowns, snapshot_id=snapshot_id)
+    print(f"\nPublished season {a.season}, week {week} snapshot {snapshot_id} to manifest.json.")
     print("Deploy/refresh the site to publish the new data.")
 
 
