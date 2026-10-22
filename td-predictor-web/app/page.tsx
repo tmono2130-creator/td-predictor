@@ -984,9 +984,13 @@ export default function Home() {
   }, [manifestState.data]);
   const selectedEntry = weeks.find((w) => `${w.season}-${w.week}` === selectedWeek) ?? weeks[0] ?? null;
   const boardState = useJson<BoardFile>(selectedEntry?.board ?? "/data/board.json");
-  const data = boardState.data;
+  const fetchedBoard = boardState.data;
+  // Never render the prior week's response while a newly selected week is loading.
+  const data = fetchedBoard && selectedEntry &&
+    fetchedBoard.meta?.season === selectedEntry.season &&
+    fetchedBoard.meta?.week === selectedEntry.week ? fetchedBoard : null;
   const error = boardState.error;
-  const loading = boardState.loading;
+  const loading = boardState.loading || Boolean(selectedEntry && !data && !error);
   const rows = useMemo(() => (data ? normalizeBoard(data) : []), [data]);
 
   return (
