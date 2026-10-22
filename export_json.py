@@ -32,6 +32,8 @@ import pandas as pd
 from td_predictor_v5 import get_predictions, get_final_scores, load_schedule
 from game_breakdown import load_breakdown_context, build_game_from_context, list_week_games
 
+REQUIRED_BOARD_COLUMNS = ["player_id", "player", "team", "position", "opponent", "td_score", "td_estimate", "game_status"]
+
 BOARD_COLUMNS = [
     "player_id", "player", "team", "position", "opponent",
     "td_score", "td_estimate", "games", "injury_status",
@@ -75,6 +77,13 @@ def detect_current_week(season):
 
 
 def board_payload(scored, season, week, model_in_use, final_games):
+    missing = [c for c in REQUIRED_BOARD_COLUMNS if c not in scored.columns]
+    if missing:
+        raise RuntimeError(f"Refusing to publish board: missing required columns: {', '.join(missing)}")
+    if scored.empty:
+        raise RuntimeError("Refusing to publish an empty player board.")
+    if scored["player_id"].astype(str).duplicated().any():
+        raise RuntimeError("Refusing to publish duplicate player_id values.")
     cols = [c for c in BOARD_COLUMNS if c in scored.columns]
     rows = scored[cols].copy()
     for c in ("td_score", "td_estimate"):
@@ -83,7 +92,7 @@ def board_payload(scored, season, week, model_in_use, final_games):
         rows["games"] = pd.to_numeric(rows["games"], errors="coerce").fillna(0).astype(int)
     if "actual_scored_td" in rows.columns:
         rows["actual_scored_td"] = rows["actual_scored_td"].fillna(False).astype(bool)
-    return {
+    payload = {
         "meta": {
             "season": int(season), "week": int(week),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -92,6 +101,79 @@ def board_payload(scored, season, week, model_in_use, final_games):
         },
         "rows": df_records(rows),
     }
+    validate_board_payload(payload, season, week)
+    return payload
+
+
+def validate_board_payload(payload, season, week):
+    meta = payload.get("meta", {})
+    if meta.get("season") != int(season) or meta.get("week") != int(week):
+        raise RuntimeError("Board metadata does not match requested season/week.")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("Board payload must contain at least one player.")
+    seen = set()
+    for index, row in enumerate(rows):
+        missing = [key for key in REQUIRED_BOARD_COLUMNS if key not in row or row[key] is None]
+        if missing:
+            raise RuntimeError(f"Board row {index} is missing required values: {', '.join(missing)}")
+        player_id = str(row["player_id"]).strip()
+        if not player_id or player_id in seen:
+            raise RuntimeError(f"Board has an empty or duplicate player_id at row {index}.")
+        seen.add(player_id)
+        try:
+            estimate = float(row["td_estimate"])
+            score = float(row["td_score"])
+        except (TypeError, ValueError):
+            raise RuntimeError(f"Board row {index} has non-numeric TD score/estimate.")
+        if not (0 <= estimate <= 100) or not pd.notna(score):
+            raise RuntimeError(f"Board row {index} has an invalid TD score/estimate.")
+
+
+def validate_breakdown_payload(payload, season, week):
+    meta = payload.get("meta", {})
+    if meta.get("season") != int(season) or meta.get("week") != int(week):
+        raise RuntimeError("Breakdown metadata does not match requested season/week.")
+    if not isinstance(payload.get("games"), dict) or not payload["games"]:
+        raise RuntimeError("Breakdown payload contains no games.")
+
+
+def week_output_dir(out_dir, season, week):
+    return os.path.join(out_dir, "seasons", str(int(season)), f"week-{int(week)}")
+
+
+def update_manifest(out_dir, season, week, board, breakdowns=None):
+    """Publish the manifest last; it is the pointer to a complete weekly snapshot."""
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Existing manifest is unreadable; refusing to overwrite it: {exc}")
+    else:
+        manifest = {"schema_version": 1, "weeks": []}
+    if manifest.get("schema_version") != 1 or not isinstance(manifest.get("weeks"), list):
+        raise RuntimeError("Existing manifest has an unsupported schema; refusing to overwrite it.")
+
+    entry = {
+        "season": int(season),
+        "week": int(week),
+        "board": f"/data/seasons/{int(season)}/week-{int(week)}/board.json",
+        "breakdowns": f"/data/seasons/{int(season)}/week-{int(week)}/breakdowns.json" if breakdowns is not None else None,
+        "generated_at": board["meta"]["generated_at"],
+        "model": board["meta"]["model"],
+    }
+    weeks = [w for w in manifest["weeks"] if not (
+        isinstance(w, dict) and w.get("season") == int(season) and w.get("week") == int(week)
+    )]
+    weeks.append(entry)
+    weeks.sort(key=lambda w: (int(w["season"]), int(w["week"])))
+    write_json(manifest_path, {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "weeks": weeks,
+    })
 
 
 def breakdown_payload(result):
@@ -118,7 +200,7 @@ def export_board(season, week, out_dir):
               "ran this, or scikit-learn missing). The site will show composite-model numbers.")
     final_games = get_final_scores(load_schedule(season), season, week)
     payload = board_payload(scored, season, week, model_in_use, final_games)
-    write_json(os.path.join(out_dir, "board.json"), payload)
+    write_json(os.path.join(week_output_dir(out_dir, season, week), "board.json"), payload)
     return payload
 
 
@@ -143,7 +225,8 @@ def export_breakdowns(season, week, lookback, out_dir):
         "games": out,
         "errors": errors,
     }
-    write_json(os.path.join(out_dir, "breakdowns.json"), payload)
+    validate_breakdown_payload(payload, season, week)
+    write_json(os.path.join(week_output_dir(out_dir, season, week), "breakdowns.json"), payload)
     return payload
 
 
@@ -160,10 +243,13 @@ def main():
     if a.week is None:
         print(f"Auto-detected current week: {week}")
 
-    export_board(a.season, week, a.out)
+    board = export_board(a.season, week, a.out)
+    breakdowns = None
     if not a.skip_breakdowns:
-        export_breakdowns(a.season, week, a.lookback, a.out)
-    print("\nDone. Deploy/refresh the site to publish the new data.")
+        breakdowns = export_breakdowns(a.season, week, a.lookback, a.out)
+    update_manifest(a.out, a.season, week, board, breakdowns)
+    print(f"\nPublished season {a.season}, week {week} to manifest.json.")
+    print("Deploy/refresh the site to publish the new data.")
 
 
 if __name__ == "__main__":
