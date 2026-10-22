@@ -6,17 +6,18 @@ in Python. The website is Next.js/Node. Instead of hosting a heavy Python
 server, this script does the heavy work on your machine (or a scheduled job)
 and writes two small static files the site simply displays:
 
-    board.json        the week's ranked player board (fitted model if present)
-    breakdowns.json   a scouting report for EVERY game that week
+    manifest.json     index of all successfully published season/week snapshots
+    seasons/<year>/week-<week>/board.json
+    seasons/<year>/week-<week>/breakdowns.json
 
 The website needs no Python at all after this. Re-run it whenever you want the
 site refreshed -- after injury reports update, after a week's games finish, and
-after retraining the model (train_final_model.py).
+after retraining the model (train_final_model.py). Each season/week is stored separately so exporting Week 8 cannot overwrite Week 7. The manifest is updated only after the requested export succeeds.
 
 USAGE:
-    python export_json.py --season 2026 --week 6 --out ../my-site/public/data
-    python export_json.py --season 2026 --out ../my-site/public/data     # week auto-detected
-    python export_json.py --season 2026 --week 6 --skip-breakdowns       # board only (fast)
+    python export_json.py --season 2026 --week 6 --out ../td-predictor-web/public/data
+    python export_json.py --season 2026 --out ../td-predictor-web/public/data     # week auto-detected
+    python export_json.py --season 2026 --week 6 --skip-breakdowns --out ../td-predictor-web/public/data
 
 Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
 (the model file is looked up relative to where you run it).
