@@ -75,8 +75,8 @@ class WeeklyExportContractTests(unittest.TestCase):
 
             self.assertEqual([(w["season"], w["week"]) for w in manifest["weeks"]], [(2025, 18), (2026, 7)])
             current = manifest["weeks"][-1]
-            self.assertEqual(current["board"], "/data/seasons/2026/week-7/board.json")
-            self.assertEqual(current["breakdowns"], "/data/seasons/2026/week-7/breakdowns.json")
+            self.assertEqual(current["board"], "/data/seasons/2026/week-7/snapshot/board.json")
+            self.assertEqual(current["breakdowns"], "/data/seasons/2026/week-7/snapshot/breakdowns.json")
 
 
 if __name__ == "__main__":
