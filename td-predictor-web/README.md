@@ -43,10 +43,10 @@ The web app reads `public/data/manifest.json` to discover published season/week 
 ```text
 public/data/
   manifest.json
-  seasons/2026/week-7/board.json
-  seasons/2026/week-7/breakdowns.json
-  seasons/2026/week-8/board.json
-  seasons/2026/week-8/breakdowns.json
+  seasons/2026/week-7/<snapshot-id>/board.json
+  seasons/2026/week-7/<snapshot-id>/breakdowns.json
+  seasons/2026/week-8/<snapshot-id>/board.json
+  seasons/2026/week-8/<snapshot-id>/breakdowns.json
 ```
 
 From the Python model directory, export into this site's `public/data` directory (adjust the relative path for your checkout):
@@ -56,7 +56,7 @@ python export_json.py --season 2026 --week 7 --out ../td-predictor-web/public/da
 python export_json.py --season 2026 --week 8 --out ../td-predictor-web/public/data
 ```
 
-The exporter validates the board and breakdown metadata before publishing the manifest. If a model/data step fails, the manifest is not advanced. `--skip-breakdowns` publishes a board-only update and preserves an already-published breakdown link for that week. The site intentionally does not fall back to the checked-in placeholder `board.json` if the manifest is missing.
+The exporter builds a complete, uniquely named snapshot in a staging directory and validates the board and breakdown metadata before publishing the manifest. The manifest is updated last and points at immutable snapshot files, so if a model/data step fails, the previous published snapshot remains intact. `--skip-breakdowns` publishes a board-only update and preserves an already-published breakdown link for that week. The site intentionally does not fall back to the checked-in placeholder `board.json` if the manifest is missing.
 
 Run the export-contract regression tests from the repository root:
 
