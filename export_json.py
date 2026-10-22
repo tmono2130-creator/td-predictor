@@ -156,11 +156,15 @@ def update_manifest(out_dir, season, week, board, breakdowns=None):
     if manifest.get("schema_version") != 1 or not isinstance(manifest.get("weeks"), list):
         raise RuntimeError("Existing manifest has an unsupported schema; refusing to overwrite it.")
 
+    previous = next((w for w in manifest["weeks"] if (
+        isinstance(w, dict) and w.get("season") == int(season) and w.get("week") == int(week)
+    )), {})
+    breakdown_path = f"/data/seasons/{int(season)}/week-{int(week)}/breakdowns.json"
     entry = {
         "season": int(season),
         "week": int(week),
         "board": f"/data/seasons/{int(season)}/week-{int(week)}/board.json",
-        "breakdowns": f"/data/seasons/{int(season)}/week-{int(week)}/breakdowns.json" if breakdowns is not None else None,
+        "breakdowns": breakdown_path if breakdowns is not None else previous.get("breakdowns"),
         "generated_at": board["meta"]["generated_at"],
         "model": board["meta"]["model"],
     }
