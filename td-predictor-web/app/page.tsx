@@ -53,6 +53,15 @@ type RawBoardRow = {
 };
 
 type BoardFile = { meta: BoardMeta; rows: RawBoardRow[] };
+type WeekEntry = {
+  season: number;
+  week: number;
+  board: string;
+  breakdowns: string | null;
+  generated_at: string;
+  model: "fitted" | "composite";
+};
+type ManifestFile = { schema_version: 1; generated_at: string; weeks: WeekEntry[] };
 
 // What the rest of the page works with: nulls already resolved.
 type BoardRow = BoardPlayer & {
@@ -825,18 +834,18 @@ function MarketTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
 
 /* ============================== Game Breakdown ============================== */
 
-function BreakdownTab({ boardMeta }: { boardMeta: BoardMeta }) {
-  const { data, error, loading } = useJson<BreakdownsFile>("/data/breakdowns.json");
+function BreakdownTab({ boardMeta, breakdownUrl }: { boardMeta: BoardMeta; breakdownUrl: string | null }) {
+  const { data, error, loading } = useJson<BreakdownsFile>(breakdownUrl ?? "/data/manifest.json?no-breakdowns");
   const keys = useMemo(() => (data ? Object.keys(data.games) : []), [data]);
   const [selected, setSelected] = useState("");
   const [side, setSide] = useState(0);
 
+  if (!breakdownUrl) return <div className={styles.notice}>Breakdowns were not published for this season/week. Re-run the exporter without --skip-breakdowns.</div>;
   if (loading) return <p className={styles.muted}>Loading breakdowns…</p>;
   if (error || !data) {
     return (
       <div className={`${styles.notice} ${styles.noticeError}`}>
-        Couldn&apos;t load /data/breakdowns.json ({error ?? "no data"}). Run export_json.py without --skip-breakdowns and
-        copy the output into public/data.
+        Couldn&apos;t load this week&apos;s breakdowns ({error ?? "no data"}). Re-run export_json.py without --skip-breakdowns.
       </div>
     );
   }
@@ -966,8 +975,18 @@ function BreakdownTab({ boardMeta }: { boardMeta: BoardMeta }) {
 /* ================================== Page ================================== */
 
 export default function Home() {
-  const { data, error, loading } = useJson<BoardFile>("/data/board.json");
+  const manifestState = useJson<ManifestFile>("/data/manifest.json");
+  const [selectedWeek, setSelectedWeek] = useState("");
   const [tab, setTab] = useState<TabId>("rankings");
+  const weeks = useMemo(() => {
+    const entries = manifestState.data?.weeks ?? [];
+    return [...entries].sort((a, b) => b.season - a.season || b.week - a.week);
+  }, [manifestState.data]);
+  const selectedEntry = weeks.find((w) => `${w.season}-${w.week}` === selectedWeek) ?? weeks[0] ?? null;
+  const boardState = useJson<BoardFile>(selectedEntry?.board ?? "/data/board.json");
+  const data = boardState.data;
+  const error = boardState.error;
+  const loading = boardState.loading;
   const rows = useMemo(() => (data ? normalizeBoard(data) : []), [data]);
 
   return (
@@ -978,7 +997,7 @@ export default function Home() {
           <p className={styles.subtitle}>
             Stats-only touchdown probabilities. No odds, no public opinion feed into the model.
           </p>
-          {data && (
+          {data && selectedEntry && (
             <div className={styles.metaRow}>
               <span className={`${styles.pill} ${styles.pillAccent}`}>
                 Week {data.meta.week} · {data.meta.season}
@@ -1006,15 +1025,42 @@ export default function Home() {
           ))}
         </div>
 
-        {loading && <p className={styles.muted}>Loading this week&apos;s board…</p>}
-        {error && (
+        {manifestState.loading && <p className={styles.muted}>Loading available weeks…</p>}
+        {manifestState.error && (
           <div className={`${styles.notice} ${styles.noticeError}`}>
-            Couldn&apos;t load /data/board.json ({error}). Run export_json.py and make sure the files end up in
-            public/data.
+            Couldn&apos;t load /data/manifest.json ({manifestState.error}). Run export_json.py to publish a real weekly snapshot; no placeholder board will be shown.
+          </div>
+        )}
+        {manifestState.data && weeks.length === 0 && (
+          <div className={styles.notice}>No weekly datasets are published yet. Run export_json.py with a season and week to publish one.</div>
+        )}
+        {manifestState.data && weeks.length > 0 && (
+          <div className={styles.controls}>
+            <div className={styles.field}>
+              <label htmlFor="season-week">Season / Week</label>
+              <select
+                id="season-week"
+                className={styles.select}
+                value={selectedEntry ? `${selectedEntry.season}-${selectedEntry.week}` : ""}
+                onChange={(e) => setSelectedWeek(e.target.value)}
+              >
+                {weeks.map((w) => (
+                  <option key={`${w.season}-${w.week}`} value={`${w.season}-${w.week}`}>
+                    {w.season} · Week {w.week}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+        {loading && selectedEntry && <p className={styles.muted}>Loading {selectedEntry.season} week {selectedEntry.week} board…</p>}
+        {error && selectedEntry && (
+          <div className={`${styles.notice} ${styles.noticeError}`}>
+            Couldn&apos;t load the selected weekly board ({error}). Re-run export_json.py for this season/week and deploy the exported data.
           </div>
         )}
 
-        {data && (
+        {data && selectedEntry && (
           <>
             <div hidden={tab !== "rankings"}>
               <RankingsTab rows={rows} meta={data.meta} />
@@ -1026,7 +1072,7 @@ export default function Home() {
               <MarketTab rows={rows} meta={data.meta} />
             </div>
             <div hidden={tab !== "breakdown"}>
-              <BreakdownTab boardMeta={data.meta} />
+              <BreakdownTab boardMeta={data.meta} breakdownUrl={selectedEntry.breakdowns} />
             </div>
           </>
         )}
