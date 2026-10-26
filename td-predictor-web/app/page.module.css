@@ -1,254 +1,58 @@
-/**
- * Parlay + market math, ported from td_predictor_v5.py so the website behaves
- * exactly like the Python app. Pure functions, no React, no I/O.
- *
- * Everything here answers "how likely is this, statistically?" It knows nothing
- * about payouts, so it cannot tell you whether a parlay is a good BET.
- */
-
-export type BoardPlayer = {
-  player_id: string;
-  player: string;
-  team: string;
-  opponent: string;
-  td_score: number;
-  td_estimate: number;
-  game_status: string; // "Upcoming" | "Final"
-};
-
-export const VOLATILITY_ORDER = ["Most Likely", "Moderate", "Long Shot", "Extreme Long Shot"] as const;
-export type VolatilityBand = (typeof VOLATILITY_ORDER)[number];
-
-export const VOLATILITY_EMOJI: Record<VolatilityBand, string> = {
-  "Most Likely": "🟢 Most Likely",
-  Moderate: "🟡 Moderate",
-  "Long Shot": "🟠 Long Shot",
-  "Extreme Long Shot": "🔴 Extreme Long Shot",
-};
-
-export type Cutoffs = { q75: number; q50: number; q25: number };
-
-export type Leg = {
-  player_id: string;
-  player: string;
-  team: string;
-  opponent: string;
-  probability_pct: number;
-};
-
-export type ParlayResult = {
-  legs: Leg[];
-  combinedPct: number;
-  volatility: string;
-  sameTeamWarning: boolean;
-  targetMissed: boolean;
-};
-
-type Combo = { value: number; picks: string[] };
-
-/** Linear-interpolated quantile; matches pandas Series.quantile (default). */
-export function quantile(sortedAsc: number[], q: number): number {
-  const n = sortedAsc.length;
-  if (n === 0) return NaN;
-  const pos = q * (n - 1);
-  const lo = Math.floor(pos);
-  const hi = Math.ceil(pos);
-  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (pos - lo);
-}
-
-/** Players still available to parlay (games not final), best first. */
-export function eligiblePool(board: BoardPlayer[]): BoardPlayer[] {
-  return board
-    .filter((p) => p.game_status !== "Final")
-    .slice()
-    .sort((a, b) => (b.td_score ?? 0) - (a.td_score ?? 0));
-}
-
-function rawCombinedPct(estimateById: Map<string, number>, ids: string[]): number {
-  let product = 1;
-  let found = 0;
-  for (const id of ids) {
-    const est = estimateById.get(id);
-    if (est === undefined) continue;
-    product *= est / 100;
-    found += 1;
-  }
-  return found === 0 ? 0 : product * 100;
-}
-
-/**
- * A representative best-to-worst spread of achievable N-leg combos (start the
- * greedy pick at each rank in turn). Not every possible combination - that is
- * combinatorially huge - but a fair sample of the realistic range.
- */
-function combosByOffset(pool: BoardPlayer[], nLegs: number, onePerTeam: boolean): Combo[] {
-  const estimateById = new Map<string, number>();
-  for (const p of pool) if (!estimateById.has(p.player_id)) estimateById.set(p.player_id, p.td_estimate);
-
-  const combos: Combo[] = [];
-  const maxOffset = Math.max(0, pool.length - nLegs);
-  for (let offset = 0; offset <= maxOffset; offset++) {
-    const picks: string[] = [];
-    const usedTeams = new Set<string>();
-    for (let i = offset; i < pool.length; i++) {
-      const r = pool[i];
-      if (onePerTeam && usedTeams.has(r.team)) continue;
-      picks.push(r.player_id);
-      usedTeams.add(r.team);
-      if (picks.length === nLegs) break;
-    }
-    if (picks.length === nLegs) combos.push({ value: rawCombinedPct(estimateById, picks), picks });
-  }
-  return combos;
-}
-
-/**
- * Quartile cutoffs of what is actually achievable THIS WEEK for this leg count.
- * Relative on purpose: multiplying legs shrinks probability fast, so fixed
- * thresholds made "Most Likely" unreachable for any 3+ leg parlay.
- */
-export function getVolatilityCutoffs(board: BoardPlayer[], nLegs: number, onePerTeam = true): Cutoffs | null {
-  const combos = combosByOffset(eligiblePool(board), nLegs, onePerTeam);
-  if (combos.length === 0) return null;
-  const values = combos.map((c) => c.value).sort((a, b) => a - b);
-  return { q75: quantile(values, 0.75), q50: quantile(values, 0.5), q25: quantile(values, 0.25) };
-}
-
-function bandOf(value: number, c: Cutoffs): VolatilityBand {
-  if (value >= c.q75) return "Most Likely";
-  if (value >= c.q50) return "Moderate";
-  if (value >= c.q25) return "Long Shot";
-  return "Extreme Long Shot";
-}
-
-export function volatilityLabel(combinedPct: number, cutoffs: Cutoffs | null): string {
-  if (cutoffs === null) {
-    // Fallback only when no reference range exists.
-    if (combinedPct >= 15) return VOLATILITY_EMOJI["Most Likely"];
-    if (combinedPct >= 5) return VOLATILITY_EMOJI.Moderate;
-    if (combinedPct >= 1) return VOLATILITY_EMOJI["Long Shot"];
-    return VOLATILITY_EMOJI["Extreme Long Shot"];
-  }
-  return VOLATILITY_EMOJI[bandOf(combinedPct, cutoffs)];
-}
-
-/**
- * Combined probability that ALL legs score, multiplying each player's own
- * estimate. That assumes independence - roughly fine across different games,
- * NOT fine for teammates (red-zone chances are a shared, limited resource),
- * which is why sameTeamWarning exists.
- *
- * Pass `cutoffs` to reuse ones you already computed; leave undefined to compute.
- */
-export function parlayProbability(
-  board: BoardPlayer[],
-  playerIds: string[],
-  cutoffs?: Cutoffs | null,
-): ParlayResult {
-  const wanted = new Set(playerIds);
-  const seen = new Set<string>();
-  const rows: BoardPlayer[] = [];
-  for (const p of board) {
-    if (wanted.has(p.player_id) && !seen.has(p.player_id)) {
-      rows.push(p);
-      seen.add(p.player_id);
-    }
-  }
-  const missing = [...wanted].filter((id) => !seen.has(id));
-  if (missing.length > 0) throw new Error(`Could not find these player(s) on this week's board: ${missing.join(", ")}`);
-
-  let combined = 1;
-  const legs: Leg[] = rows.map((r) => {
-    combined *= r.td_estimate / 100;
-    return {
-      player_id: r.player_id,
-      player: r.player,
-      team: r.team,
-      opponent: r.opponent,
-      probability_pct: r.td_estimate,
-    };
-  });
-  const combinedPct = combined * 100;
-  const resolved = cutoffs === undefined ? getVolatilityCutoffs(board, wanted.size) : cutoffs;
-  const teams = rows.map((r) => r.team);
-
-  return {
-    legs,
-    combinedPct,
-    volatility: volatilityLabel(combinedPct, resolved),
-    sameTeamWarning: new Set(teams).size !== teams.length,
-    targetMissed: false,
-  };
-}
-
-export type AutoBuildOptions = {
-  nLegs: number;
-  onePerTeam: boolean;
-  target: VolatilityBand;
-  /** Recently shown combinations (player_id lists) to avoid repeating. */
-  avoid?: string[][];
-  /** Injectable for tests; defaults to Math.random. */
-  rng?: () => number;
-};
-
-/**
- * Picks randomly among ALL combinations that land in the requested band, and
- * skips recently shown ones when an alternative exists. If the band is empty
- * (only possible with a tiny pool) it says so via targetMissed instead of
- * pretending it hit the target.
- */
-export function autoBuildParlay(board: BoardPlayer[], opts: AutoBuildOptions): ParlayResult {
-  const { nLegs, onePerTeam, target, avoid = [], rng = Math.random } = opts;
-  if (!(VOLATILITY_ORDER as readonly string[]).includes(target)) {
-    throw new Error(`Unknown volatility target: ${target}`);
-  }
-
-  const pool = eligiblePool(board);
-  const combos = combosByOffset(pool, nLegs, onePerTeam);
-  if (combos.length === 0) throw new Error("Not enough eligible players this week to build a parlay of this size.");
-
-  const values = combos.map((c) => c.value).sort((a, b) => a - b);
-  const cutoffs: Cutoffs = { q75: quantile(values, 0.75), q50: quantile(values, 0.5), q25: quantile(values, 0.25) };
-
-  let matches = combos.filter((c) => bandOf(c.value, cutoffs) === target).map((c) => c.picks);
-  let targetMissed = false;
-  if (matches.length === 0) {
-    targetMissed = true;
-    matches = combos.map((c) => c.picks);
-  }
-
-  if (avoid.length > 0) {
-    const avoidKeys = new Set(avoid.map((s) => [...s].sort().join("|")));
-    const fresh = matches.filter((m) => !avoidKeys.has([...m].sort().join("|")));
-    if (fresh.length > 0) matches = fresh;
-  }
-
-  const chosen = matches[Math.min(matches.length - 1, Math.floor(rng() * matches.length))];
-  const result = parlayProbability(board, chosen, cutoffs);
-  result.targetMissed = targetMissed;
-  return result;
-}
-
-/**
- * American odds -> the probability the price implies (vig NOT removed).
- * "+150" -> 40%, "-150" -> 60%. Returns null for anything unreadable.
- */
-export function impliedProbFromAmericanOdds(input: string): number | null {
-  const cleaned = input.trim().replace(/^\+/, "");
-  if (cleaned === "") return null;
-  const odds = Number(cleaned);
-  if (!Number.isFinite(odds) || odds === 0) return null;
-  return odds > 0 ? (100 / (odds + 100)) * 100 : (-odds / (-odds + 100)) * 100;
-}
-
-/**
- * A probability expressed as the American-odds price that would be break-even
- * for it (no vig). 25% -> "+300", 75% -> "-300". Compare against a book's
- * price: a better payout than this means the book is paying more than the
- * model thinks the outcome is worth (if you trust the model).
- */
-export function fairAmericanOdds(pct: number): string | null {
-  const p = pct / 100;
-  if (!Number.isFinite(p) || p <= 0 || p >= 1) return null;
-  return p <= 0.5 ? `+${Math.round(((1 - p) / p) * 100)}` : `-${Math.round((p / (1 - p)) * 100)}`; // even money is +100
-}
+/* Application styling. The previous tracked file duplicated lib/parlay.ts and
+   was not valid CSS, which prevented every production build. */
+.app { min-height: 100vh; padding: 32px 18px 48px; background: #f4f7fb; color: #172033; }
+.shell { max-width: 1200px; margin: 0 auto; }
+.header { margin-bottom: 22px; }
+.header h1 { margin: 0 0 6px; font-size: clamp(28px, 4vw, 40px); }
+.subtitle, .caption, .muted, .dim { color: #667085; }
+.subtitle { margin: 0 0 18px; }
+.metaRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid #dce3ed; border-radius: 999px; background: #fff; font-size: 13px; }
+.pillAccent { color: #155eef; border-color: #b2ccff; background: #eff6ff; font-weight: 700; }
+.tabs { display: flex; gap: 8px; overflow-x: auto; margin: 20px 0; border-bottom: 1px solid #dce3ed; }
+.tab { flex: 0 0 auto; border: 0; border-bottom: 3px solid transparent; padding: 12px 14px; background: transparent; color: #475467; cursor: pointer; font-weight: 650; }
+.tabActive { color: #155eef; border-bottom-color: #155eef; }
+.panel, .card, .details { margin: 14px 0; border: 1px solid #e1e7ef; border-radius: 14px; background: #fff; padding: 18px; box-shadow: 0 2px 8px #1018280a; }
+.controls { display: flex; flex-wrap: wrap; align-items: end; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 150px; }
+.field label, .sectionTitle, .metricLabel { color: #475467; font-size: 13px; font-weight: 650; }
+.select, .input { min-height: 38px; border: 1px solid #cfd8e3; border-radius: 8px; padding: 7px 10px; background: #fff; color: #172033; }
+.tableWrap { width: 100%; overflow-x: auto; margin: 12px 0 20px; }
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th, .table td { padding: 10px 12px; border-bottom: 1px solid #e8edf3; text-align: left; white-space: nowrap; }
+.table th { position: sticky; top: 0; background: #f8fafc; color: #475467; font-size: 12px; text-transform: uppercase; }
+.numCell { text-align: right !important; font-variant-numeric: tabular-nums; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.card { padding: 15px; }
+.cardRank { color: #667085; font-size: 12px; }
+.cardName { margin: 5px 0; font-weight: 750; }
+.cardPct { color: #155eef; font-size: 23px; font-weight: 800; }
+.cardMeta { color: #667085; font-size: 13px; }
+.notice { margin: 14px 0; border: 1px solid #fecdca; border-radius: 10px; padding: 12px 15px; background: #fff6f5; color: #912018; }
+.noticeError { border-color: #fecdca; background: #fff6f5; color: #912018; }
+.noticeInfo { border-color: #b2ddff; background: #f0f9ff; color: #1849a9; }
+.btn { border: 1px solid #cfd8e3; border-radius: 8px; padding: 9px 13px; background: #fff; cursor: pointer; font-weight: 650; }
+.btnPrimary { border-color: #155eef; background: #155eef; color: #fff; }
+.btnSmall { padding: 5px 9px; font-size: 12px; }
+.btnWide { width: 100%; }
+.chips, .legChips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip, .legChip { display: inline-flex; gap: 7px; align-items: center; border: 1px solid #dce3ed; border-radius: 999px; padding: 6px 10px; background: #f8fafc; }
+.chipActive { border-color: #84adff; background: #eff6ff; color: #1849a9; }
+.legRemove { border: 0; background: transparent; cursor: pointer; }
+.picker { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 14px; }
+.pickList { max-height: 300px; overflow: auto; border: 1px solid #e1e7ef; border-radius: 10px; }
+.pickItem { display: block; width: 100%; border: 0; border-bottom: 1px solid #eef1f5; padding: 10px; background: #fff; text-align: left; cursor: pointer; }
+.pickEmpty { padding: 14px; color: #667085; }
+.checkRow { display: flex; align-items: center; gap: 8px; }
+.range { width: 100%; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.metric { border: 1px solid #e1e7ef; border-radius: 10px; padding: 12px; background: #fff; }
+.metricValue { font-size: 20px; font-weight: 750; }
+.metricLabel { margin-top: 4px; }
+.sectionTitle { margin: 20px 0 8px; font-size: 17px; }
+.flagList { color: #912018; }
+.good { color: #067647; }
+.bad, .warnText { color: #b42318; }
+.footer { margin-top: 34px; padding-top: 16px; border-top: 1px solid #dce3ed; color: #667085; font-size: 13px; line-height: 1.6; }
+.footer a { color: #155eef; }
+@media (max-width: 680px) { .app { padding: 22px 12px 36px; } .picker { grid-template-columns: 1fr; } .panel { padding: 12px; } }

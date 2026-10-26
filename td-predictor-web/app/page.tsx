@@ -53,6 +53,12 @@ type RawBoardRow = {
 };
 
 type BoardFile = { meta: BoardMeta; rows: RawBoardRow[] };
+type WeeklyFiles = { board: string; breakdowns: string | null; generated_at: string; model: "fitted" | "composite" };
+type DataManifest = {
+  schema_version: 1;
+  supported_weeks: number[];
+  seasons: Record<string, { weeks: Record<string, WeeklyFiles> }>;
+};
 
 // What the rest of the page works with: nulls already resolved.
 type BoardRow = BoardPlayer & {
@@ -143,13 +149,12 @@ function normalizeBoard(file: BoardFile): BoardRow[] {
   });
 }
 
-function useJson<T>(url: string) {
-  const [state, setState] = useState<{ data: T | null; error: string | null; loading: boolean }>({
-    data: null,
-    error: null,
-    loading: true,
-  });
+function useJson<T>(url: string | null) {
+  const [state, setState] = useState<{ url: string | null; data: T | null; error: string | null }>(
+    { url: null, data: null, error: null },
+  );
   useEffect(() => {
+    if (!url) return;
     let cancelled = false;
     fetch(url, { cache: "no-store" })
       .then((r) => {
@@ -157,16 +162,16 @@ function useJson<T>(url: string) {
         return r.json() as Promise<T>;
       })
       .then((data) => {
-        if (!cancelled) setState({ data, error: null, loading: false });
+        if (!cancelled) setState({ url, data, error: null });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setState({ data: null, error: errMessage(e), loading: false });
+        if (!cancelled) setState({ url, data: null, error: errMessage(e) });
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [url]);
-  return state;
+  if (!url) return { data: null, error: null, loading: false };
+  if (state.url !== url) return { data: null, error: null, loading: true };
+  return { data: state.data, error: state.error, loading: false };
 }
 
 /* ============================ shared components ============================ */
@@ -683,12 +688,12 @@ function MarketTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
       const raw = window.localStorage.getItem(storageKey);
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
-        if (Array.isArray(parsed)) setItems(parsed as StoredComparison[]);
+        if (Array.isArray(parsed)) queueMicrotask(() => setItems(parsed as StoredComparison[]));
       }
     } catch {
       /* storage unavailable or corrupted — start empty */
     }
-    setLoaded(true);
+    queueMicrotask(() => setLoaded(true));
   }, [storageKey]);
 
   useEffect(() => {
@@ -825,12 +830,15 @@ function MarketTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
 
 /* ============================== Game Breakdown ============================== */
 
-function BreakdownTab({ boardMeta }: { boardMeta: BoardMeta }) {
-  const { data, error, loading } = useJson<BreakdownsFile>("/data/breakdowns.json");
+function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardMeta; dataUrl: string | null }) {
+  const { data, error, loading } = useJson<BreakdownsFile>(dataUrl);
   const keys = useMemo(() => (data ? Object.keys(data.games) : []), [data]);
   const [selected, setSelected] = useState("");
   const [side, setSide] = useState(0);
 
+  if (!dataUrl) {
+    return <div className={`${styles.notice} ${styles.noticeInfo}`}>No game breakdown export is available for this season and week.</div>;
+  }
   if (loading) return <p className={styles.muted}>Loading breakdowns…</p>;
   if (error || !data) {
     return (
@@ -965,82 +973,123 @@ function BreakdownTab({ boardMeta }: { boardMeta: BoardMeta }) {
 
 /* ================================== Page ================================== */
 
-export default function Home() {
-  const { data, error, loading } = useJson<BoardFile>("/data/board.json");
+function boardValidationError(value: BoardFile | null, season: number, week: number): string | null {
+  if (!value || typeof value !== "object" || !value.meta || !Array.isArray(value.rows)) {
+    return "The selected board file does not match the required meta/rows schema.";
+  }
+  const meta = value.meta;
+  if (meta.season !== season || meta.week !== week) {
+    return `The selected file contains ${meta.season} week ${meta.week}, not ${season} week ${week}.`;
+  }
+  if (!Number.isFinite(Date.parse(meta.generated_at)) || !["fitted", "composite"].includes(meta.model) || !Array.isArray(meta.final_games)) {
+    return "The selected board metadata is invalid.";
+  }
+  const seen = new Set<string>();
+  const teams = new Set(Object.keys(TEAM_NAMES));
+  for (const [index, row] of value.rows.entries()) {
+    if (!row || typeof row !== "object") return `Board row ${index + 1} is invalid.`;
+    for (const field of ["player_id", "player", "position", "game_status"] as const) {
+      if (typeof row[field] !== "string" || !row[field].trim()) return `Board row ${index + 1} is missing ${field}.`;
+    }
+    if (seen.has(row.player_id)) return `The board contains duplicate player ID ${row.player_id}.`;
+    seen.add(row.player_id);
+    if (!teams.has(row.team) || !teams.has(row.opponent)) return `Board row ${index + 1} has an invalid team code.`;
+    for (const field of ["td_score", "td_estimate"] as const) {
+      if (typeof row[field] !== "number" || !Number.isFinite(row[field]) || row[field] < 0 || row[field] > 100) {
+        return `Board row ${index + 1} has an invalid ${field}; expected a number from 0 to 100.`;
+      }
+    }
+  }
+  return null;
+}
+
+function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
+  const seasonOptions = Object.keys(manifest.seasons).map(Number).filter(Number.isFinite).sort((a, b) => b - a);
+  const [selectedSeason, setSelectedSeason] = useState(String(seasonOptions[0] ?? ""));
+  const season = seasonOptions.includes(Number(selectedSeason)) ? Number(selectedSeason) : (seasonOptions[0] ?? 0);
+  const selectedSeasonData = manifest.seasons[String(season)];
+  const generatedWeeks = Object.keys(selectedSeasonData?.weeks ?? {}).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const [selectedWeek, setSelectedWeek] = useState(String(generatedWeeks.at(-1) ?? manifest.supported_weeks[0] ?? 1));
+  const week = Number(selectedWeek || generatedWeeks.at(-1) || manifest.supported_weeks[0] || 1);
+  const entry = selectedSeasonData?.weeks[String(week)];
+  const boardUrl = entry?.board ? `/data/${entry.board}` : null;
+  const breakdownsUrl = entry?.breakdowns ? `/data/${entry.breakdowns}` : null;
+  const { data, error, loading } = useJson<BoardFile>(boardUrl);
   const [tab, setTab] = useState<TabId>("rankings");
-  const rows = useMemo(() => (data ? normalizeBoard(data) : []), [data]);
+  const validationError = boardValidationError(data, season, week);
+  const boardError = error ?? validationError;
+  const rows = data && !boardError ? normalizeBoard(data) : [];
+  const supported = manifest.supported_weeks.includes(week);
 
   return (
     <div className={styles.app}>
       <div className={styles.shell}>
         <header className={styles.header}>
           <h1>🏈 TD Likelihood</h1>
-          <p className={styles.subtitle}>
-            Stats-only touchdown probabilities. No odds, no public opinion feed into the model.
-          </p>
-          {data && (
-            <div className={styles.metaRow}>
-              <span className={`${styles.pill} ${styles.pillAccent}`}>
-                Week {data.meta.week} · {data.meta.season}
-              </span>
-              <span className={styles.pill}>
-                Model: {data.meta.model === "fitted" ? "fitted (logistic regression)" : "hand-weighted composite"}
-              </span>
+          <p className={styles.subtitle}>Stats-only touchdown probabilities. No odds, no public opinion feed into the model.</p>
+          <div className={styles.metaRow}>
+            <label className={styles.pill}>Season{" "}
+              <select className={styles.select} aria-label="Season" value={String(season)} onChange={(e) => {
+                const nextSeason = Number(e.target.value);
+                const nextWeeks = Object.keys(manifest.seasons[String(nextSeason)]?.weeks ?? {}).map(Number).sort((a, b) => a - b);
+                setSelectedSeason(e.target.value);
+                setSelectedWeek(String(nextWeeks.at(-1) ?? manifest.supported_weeks[0] ?? 1));
+              }}>
+                {seasonOptions.map((year) => <option key={year} value={year}>{year}</option>)}
+              </select>
+            </label>
+            <label className={styles.pill}>Week{" "}
+              <select className={styles.select} aria-label="Week" value={String(week)} onChange={(e) => setSelectedWeek(e.target.value)}>
+                {manifest.supported_weeks.map((n) => <option key={n} value={n}>Week {n}{selectedSeasonData?.weeks[String(n)] ? "" : " · not generated"}</option>)}
+              </select>
+            </label>
+            {data && !boardError && <>
+              <span className={`${styles.pill} ${styles.pillAccent}`}>Week {data.meta.week} · {data.meta.season}</span>
+              <span className={styles.pill}>Model: {data.meta.model === "fitted" ? "fitted (logistic regression)" : "hand-weighted composite"}</span>
               <span className={styles.pill}>Updated {new Date(data.meta.generated_at).toLocaleString()}</span>
-            </div>
-          )}
+            </>}
+          </div>
         </header>
 
         <div className={styles.tabs} role="tablist" aria-label="Sections">
           {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`}
-              onClick={() => setTab(t.id)}
-            >
+            <button key={t.id} type="button" role="tab" aria-selected={tab === t.id}
+              className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`} onClick={() => setTab(t.id)}>
               {t.label}
             </button>
           ))}
         </div>
 
-        {loading && <p className={styles.muted}>Loading this week&apos;s board…</p>}
-        {error && (
-          <div className={`${styles.notice} ${styles.noticeError}`}>
-            Couldn&apos;t load /data/board.json ({error}). Run export_json.py and make sure the files end up in
-            public/data.
-          </div>
-        )}
+        {loading && <p className={styles.muted}>Loading {season} week {week}…</p>}
+        {!loading && !boardUrl && <div className={`${styles.notice} ${supported ? styles.noticeInfo : styles.noticeError}`}>
+          {supported ? `Predictions for ${season} week ${week} have not been generated yet. Run export_json.py for this week.` : `Week ${week} is outside the supported regular-season range.`}
+        </div>}
+        {!loading && boardUrl && boardError && <div className={`${styles.notice} ${styles.noticeError}`}>
+          Couldn&apos;t load valid predictions for {season} week {week}: {boardError}. Re-run export_json.py and check its validation output.
+        </div>}
 
-        {data && (
-          <>
-            <div hidden={tab !== "rankings"}>
-              <RankingsTab rows={rows} meta={data.meta} />
-            </div>
-            <div hidden={tab !== "parlay"}>
-              <ParlayTab rows={rows} />
-            </div>
-            <div hidden={tab !== "market"}>
-              <MarketTab rows={rows} meta={data.meta} />
-            </div>
-            <div hidden={tab !== "breakdown"}>
-              <BreakdownTab boardMeta={data.meta} />
-            </div>
-          </>
-        )}
-
+        {data && !boardError && <>
+          <div hidden={tab !== "rankings"}><RankingsTab rows={rows} meta={data.meta} /></div>
+          <div hidden={tab !== "parlay"}><ParlayTab rows={rows} /></div>
+          <div hidden={tab !== "market"}><MarketTab rows={rows} meta={data.meta} /></div>
+          <div hidden={tab !== "breakdown"}><BreakdownTab boardMeta={data.meta} dataUrl={breakdownsUrl} /></div>
+        </>}
         <footer className={styles.footer}>
-          Data: nflverse (via nflreadpy). Est. TD% is a model&apos;s estimate from past play — not a guarantee and not a
-          sportsbook price. For entertainment and analysis only; not betting advice. If gambling stops being fun, help is
-          available at{" "}
-          <a href="https://www.ncpgambling.org" target="_blank" rel="noopener noreferrer">
-            ncpgambling.org
-          </a>
-          .
+          Data: nflverse (via nflreadpy). Est. TD% is a model&apos;s estimate from past play — not a guarantee and not a sportsbook price. For entertainment and analysis only; not betting advice. If gambling stops being fun, help is available at{" "}
+          <a href="https://www.ncpgambling.org" target="_blank" rel="noopener noreferrer">ncpgambling.org</a>.
         </footer>
       </div>
     </div>
   );
+}
+
+export default function Home() {
+  const { data, error, loading } = useJson<DataManifest>("/data/manifest.json");
+  if (loading) return <main className={styles.app}><p className={styles.muted}>Loading available prediction weeks…</p></main>;
+  if (error || !data || data.schema_version !== 1 || !Array.isArray(data.supported_weeks) || !data.seasons || typeof data.seasons !== "object") {
+    return <main className={styles.app}><div className={`${styles.notice} ${styles.noticeError}`}>
+      Prediction week index is unavailable or invalid ({error ?? "manifest schema mismatch"}). Run export_json.py successfully to publish validated weekly data.
+    </div></main>;
+  }
+  return <WeeklyDashboard manifest={data} />;
 }

@@ -4,10 +4,11 @@ EXPORT JSON — runs your Python model and writes the JSON files the website rea
 Why this exists: the model (nflreadpy, pandas, the fitted .joblib) can only run
 in Python. The website is Next.js/Node. Instead of hosting a heavy Python
 server, this script does the heavy work on your machine (or a scheduled job)
-and writes two small static files the site simply displays:
+and writes versioned static files plus a manifest that the site reads:
 
-    board.json        the week's ranked player board (fitted model if present)
-    breakdowns.json   a scouting report for EVERY game that week
+    manifest.json                      index of generated season/week exports
+    {season}/week-{week}/{run-id}/board.json
+    {season}/week-{week}/{run-id}/breakdowns.json (unless --skip-breakdowns)
 
 The website needs no Python at all after this. Re-run it whenever you want the
 site refreshed -- after injury reports update, after a week's games finish, and
@@ -25,12 +26,14 @@ Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
 import argparse
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 
 import pandas as pd
 
 from td_predictor_v5 import get_predictions, get_final_scores, load_schedule
 from game_breakdown import load_breakdown_context, build_game_from_context, list_week_games
+from data_schema import SCHEMA_VERSION, SUPPORTED_WEEKS, validate_board, validate_breakdowns
 
 BOARD_COLUMNS = [
     "player_id", "player", "team", "position", "opponent",
@@ -118,7 +121,6 @@ def export_board(season, week, out_dir):
               "ran this, or scikit-learn missing). The site will show composite-model numbers.")
     final_games = get_final_scores(load_schedule(season), season, week)
     payload = board_payload(scored, season, week, model_in_use, final_games)
-    write_json(os.path.join(out_dir, "board.json"), payload)
     return payload
 
 
@@ -143,28 +145,77 @@ def export_breakdowns(season, week, lookback, out_dir):
         "games": out,
         "errors": errors,
     }
-    write_json(os.path.join(out_dir, "breakdowns.json"), payload)
     return payload
 
 
+def publish_week(season, week, board, breakdowns, out_dir):
+    """Write versioned weekly artifacts, then atomically publish the manifest pointer."""
+    validate_board(board, season, week)
+    if breakdowns is not None:
+        validate_breakdowns(breakdowns, season, week)
+
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        if (not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION
+                or not isinstance(manifest.get("seasons"), dict)):
+            raise ValueError(f"Invalid existing data manifest: {manifest_path}")
+    else:
+        manifest = {"schema_version": SCHEMA_VERSION, "supported_weeks": list(SUPPORTED_WEEKS),
+                    "seasons": {}}
+
+    season_key = str(season)
+    season_record = manifest["seasons"].setdefault(season_key, {"weeks": {}})
+    if not isinstance(season_record, dict) or not isinstance(season_record.get("weeks"), dict):
+        raise ValueError(f"Invalid manifest entry for season {season}")
+    previous = season_record["weeks"].get(str(week), {})
+
+    # Unique filenames keep the last known good files untouched until the manifest swap.
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    week_prefix = f"{season}/week-{week}/{run_id}"
+    board_rel = f"{week_prefix}/board.json"
+    breakdowns_rel = f"{week_prefix}/breakdowns.json"
+    week_dir = os.path.join(out_dir, str(season), f"week-{week}", run_id)
+    write_json(os.path.join(week_dir, "board.json"), board)
+    if breakdowns is not None:
+        write_json(os.path.join(week_dir, "breakdowns.json"), breakdowns)
+
+    breakdown_ref = breakdowns_rel if breakdowns is not None else previous.get("breakdowns")
+    if breakdown_ref and not os.path.isfile(os.path.join(out_dir, *breakdown_ref.split("/"))):
+        breakdown_ref = None
+    season_record["weeks"][str(week)] = {
+        "board": board_rel,
+        "breakdowns": breakdown_ref,
+        "generated_at": board["meta"]["generated_at"],
+        "model": board["meta"]["model"],
+    }
+    write_json(manifest_path, manifest)
+    print(f"  published season {season}, week {week} in {manifest_path}")
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Export model output as JSON for the website.")
+    ap = argparse.ArgumentParser(description="Export validated model output for the website.")
     ap.add_argument("--season", type=int, required=True)
-    ap.add_argument("--week", type=int, default=None, help="Omit to auto-detect the current week.")
+    ap.add_argument("--week", type=int, default=None, help="Omit to auto-detect the current regular-season week.")
     ap.add_argument("--out", type=str, default="./public/data", help="Folder the site serves data from.")
     ap.add_argument("--lookback", type=int, default=6, help="Games of history per team for breakdowns.")
     ap.add_argument("--skip-breakdowns", action="store_true", help="Board only (much faster).")
     a = ap.parse_args()
 
+    if a.season < 1999:
+        ap.error("--season must be 1999 or later")
     week = a.week if a.week is not None else detect_current_week(a.season)
+    if week not in SUPPORTED_WEEKS:
+        ap.error("--week must be a regular-season week from 1 through 18")
     if a.week is None:
         print(f"Auto-detected current week: {week}")
 
-    export_board(a.season, week, a.out)
-    if not a.skip_breakdowns:
-        export_breakdowns(a.season, week, a.lookback, a.out)
+    board = export_board(a.season, week, a.out)
+    validate_board(board, a.season, week)
+    breakdowns = None if a.skip_breakdowns else export_breakdowns(a.season, week, a.lookback, a.out)
+    publish_week(a.season, week, board, breakdowns, a.out)
     print("\nDone. Deploy/refresh the site to publish the new data.")
-
 
 if __name__ == "__main__":
     main()
