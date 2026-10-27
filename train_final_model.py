@@ -1,25 +1,10 @@
 """
-TRAIN FINAL MODEL — fits the production logistic regression on ALL
-available training data and saves it for the live app to use.
+TRAIN THE OPTIONAL FITTED MODEL from validated historical training data.
 
-This is different from model_v6.py: that script held out a season to
-test whether a fitted model beats the composite (it did, and logistic
-specifically won on top-10 hit rate). This script trains the model
-that actually gets used, on every row available -- no holdout, since
-the methodology is already validated.
-
-Logistic was chosen over gradient boosting per the model_v6.py
-comparison: close on Brier/log-loss, logistic clearly better on top-10
-hit rate, and it's the more interpretable, less overfit-prone choice
-for a ~2-6% positive-rate problem.
-
-USAGE:
-    python train_final_model.py --data training_data.csv
-
-RUN THIS AGAIN whenever training_data.csv is refreshed (i.e. after
-regenerating it with a newly-completed week added) -- the app always
-uses whatever's in model_v6.joblib, so the model only gets smarter
-after you retrain it.
+This script does not prove that logistic regression beats the V5 composite.
+Run the guarded, strictly chronological model_v6.py evaluation first, inspect
+its held-out results, and only then decide whether to train/deploy a candidate.
+The V5 model remains the default when no local model bundle is present.
 """
 
 import argparse
@@ -31,8 +16,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 
-EXCLUDE = {"player_id", "player", "team", "position", "opponent",
-           "season", "week", "actual_td", "td_score", "td_estimate"}
+from evaluation_utils import validate_training_data_frame
+
+EXCLUDE = {"player_id", "game_id", "player", "team", "position", "opponent",
+           "season", "week", "actual_td", "td_score", "td_estimate",
+           "week_complete", "prediction_origin", "prediction_generated_at",
+           "feature_cutoff_season", "feature_cutoff_week"}
 
 
 def main():
@@ -42,9 +31,13 @@ def main():
     args = parser.parse_args()
 
     df = pd.read_csv(args.data)
+    try:
+        validate_training_data_frame(df)
+    except ValueError as e:
+        raise SystemExit(f"Training data is not valid: {e}") from e
     feats = [c for c in df.columns if c not in EXCLUDE and pd.api.types.is_numeric_dtype(df[c])]
 
-    print(f"Training on {len(df):,} rows, {len(feats)} features, "
+    print(f"Training on {len(df):,} retrospective rows, {len(feats)} features, "
           f"seasons {sorted(df['season'].unique().tolist())}")
     print(f"Positive rate: {df['actual_td'].mean() * 100:.2f}%")
 

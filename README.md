@@ -72,3 +72,33 @@ npm run build
 ## Model status
 
 The V5 composite is still the default. V6 contains held-out-season candidate evaluation for logistic regression and gradient boosting; `train_final_model.py` can create a fitted model bundle, and V5 will use that bundle if one is present. No `model_v6.joblib` is committed, so the repository's checked-in weekly placeholder is not evidence of live fitted-model predictions. Keep V6 evaluation separate and compare it on held-out seasons before treating a candidate as a production improvement.
+## Milestone 2 — reliability and evaluation safeguards
+
+### Injury statuses
+
+The prediction pipeline uses nflverse weekly official team injury reports (`load_injuries`). The official dataset separates `report_status` (Out, Doubtful, Questionable, when designated) from `practice_status` (practice participation); those fields are not interchangeable. This feed does not publish an `Active` game status for every player. A missing weekly report, missing player row, or blank report designation is now `Unknown`; only an explicit source value can become `Active`. `Unknown` does not change the V5 score and is not displayed as confirmed Active. The website reports whether that week has any injury-report rows. Status does not represent final gameday inactives.
+
+The feed was checked on 2026-10-26: the 2026 dataset returned injury report rows for Weeks 1–7 only (2,139 rows total; Week 7 had 350). There were no report rows for Weeks 8 or 9 yet. The repaired player-ID mapping matched 101 Week 7 player profiles; only 42 of those had explicit game designations. No player status is inferred for Weeks 8–9.
+
+### Prediction timing and player/game integrity
+
+V5's live stat features use the prior season plus current-season player stats strictly before the requested week. The team scoring environment and current-season defensive history also stop before the target week. Same-week scores and scorer stats are attached only to annotate completed games; they do not feed `td_score` or `td_estimate`. V5 weights and score calculations were not changed.
+
+Each new board now includes the official schedule's `game_id`, matchup, UTC kickoff, and per-game record timing. An export timestamp before kickoff is labeled `pregame_snapshot`; after kickoff it is labeled `historical_backfill`. This documents when the artifact was saved relative to kickoff. Historical feature data does not have archived source vintages or input checksums, so reconstructed historical rows are not proof that the exact same source data was available then. Week 7's refreshed board has 13 retrospective games and one pregame snapshot; Weeks 8 and 9 were saved before their scheduled kickoffs on 2026-10-26.
+
+Validation now requires every player row to map to a scheduled game and matching team/opponent pair, rejects duplicate player/game predictions, checks injury/game/timing categories, and verifies that all scheduled games are present in board metadata. The website rejects mismatched breakdown week/game pairs. Parlays and market comparisons use only games whose status is Upcoming; In Progress, Final, and Unknown games are excluded.
+
+### Backtest and V6 status
+
+The checked-in `training_data.csv` is not valid for V6 training. It contains 15,952 rows for 2026 Weeks 2–18, all labeled `actual_td=0`, although the current 2026 weekly player-stat source now contains touchdown outcomes through Week 7. This file is stale relative to the source and includes future/unplayed weeks. `model_v6_predictions_2025.csv` was produced using that dataset. The old V6 split trained on every season other than the holdout, including later seasons, so its held-out claims were temporally contaminated. Those artifacts are retained for provenance but must not be used as a trustworthy model comparison.
+
+The 2024 and 2025 backtest CSVs are retrospective reconstructions with no export-time/source-vintage evidence. Their descriptive averages show an apparent 1.49 and 1.64 percentage-point mean probability shortfall respectively (Brier 0.0536/0.0549; log loss 0.1844/0.1904; score AUC 0.869/0.862). These are not valid calibration claims: V5's checked-in probability lookup was fit on 2025, and the rows were regenerated after the seasons ended. No V5 weights were changed.
+
+The rebuilt data workflow skips any week whose full regular-season schedule lacks final scores, joins outcomes by both `player_id` and `game_id`, and labels every row `retrospective_backfill` with a generation time and pre-week feature cutoff. `model_v6.py` and `train_final_model.py` now reject legacy data without these checks. V6 trains only on seasons earlier than the held-out season, and its V5 ranking-score baseline is calibrated on earlier seasons only. Rebuild training data before running either script:
+
+```powershell
+python build_training_data.py --seasons 2023 2024 2025 --out training_data_validated.csv
+python model_v6.py --data training_data_validated.csv --holdout 2025
+```
+
+Reconstruction remains useful for development, but a trustworthy pregame performance record requires forecasts archived before kickoff along with feature/feed versions. Save weekly exports before games, then evaluate those saved board rows only after the full week has final scores.

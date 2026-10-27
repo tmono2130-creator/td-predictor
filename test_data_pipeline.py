@@ -15,9 +15,22 @@ def sample_board(season=2026, week=8, player_id="00-0030001"):
             "generated_at": "2026-10-22T12:00:00+00:00",
             "model": "composite",
             "final_games": [],
+            "games": [{
+                "game_id": f"{season}_{week:02}_BUF_KC",
+                "away_team": "KC",
+                "home_team": "BUF",
+                "kickoff_utc": "2026-10-30T00:15:00+00:00",
+                "prediction_timing": "pregame_snapshot",
+            }],
+            "injury_report": {
+                "source": "nflverse weekly official injury reports",
+                "week_available": False,
+                "unknown_is_not_active": True,
+            },
         },
         "rows": [{
             "player_id": player_id,
+            "game_id": f"{season}_{week:02}_BUF_KC",
             "player": "Test Player",
             "team": "BUF",
             "position": "RB",
@@ -25,8 +38,9 @@ def sample_board(season=2026, week=8, player_id="00-0030001"):
             "td_score": 45.2,
             "td_estimate": 21.3,
             "game_status": "Upcoming",
+            "prediction_timing": "pregame_snapshot",
             "games": 6,
-            "injury_status": "Active",
+            "injury_status": "Unknown",
             "actual_scored_td": False,
             "is_home": 1,
         }],
@@ -72,6 +86,8 @@ class BoardSchemaTests(unittest.TestCase):
         validate_breakdowns(payload, 2026, 8)
         with self.assertRaisesRegex(ValueError, "week mismatch"):
             validate_breakdowns(payload, 2026, 7)
+        with self.assertRaisesRegex(ValueError, "outside the selected week's schedule"):
+            validate_breakdowns(payload, 2026, 8, [{"away_team": "KC", "home_team": "BUF"}])
 
 
 class WeeklyPublicationTests(unittest.TestCase):
@@ -101,6 +117,167 @@ class WeeklyPublicationTests(unittest.TestCase):
                 publish_week(2026, 8, invalid, None, tmp)
             self.assertEqual(path.read_bytes(), before)
 
+
+class InjuryAndScheduleIntegrityTests(unittest.TestCase):
+    def test_board_rows_must_match_scheduled_game(self):
+        board = sample_board()
+        board["rows"][0]["team"] = "MIA"
+        with self.assertRaisesRegex(ValueError, "do not match scheduled game"):
+            validate_board(board, 2026, 8)
+
+    def test_board_rejects_unknown_timing_or_injury_status_alias(self):
+        board = sample_board()
+        board["rows"][0]["prediction_timing"] = "pre-game-ish"
+        with self.assertRaisesRegex(ValueError, "prediction_timing has invalid value"):
+            validate_board(board, 2026, 8)
+        board = sample_board()
+        board["rows"][0]["injury_status"] = "Healthy"
+        with self.assertRaisesRegex(ValueError, "injury_status has invalid value"):
+            validate_board(board, 2026, 8)
+
+    def test_unknown_is_valid_and_never_interpreted_as_active(self):
+        board = sample_board()
+        self.assertEqual(board["rows"][0]["injury_status"], "Unknown")
+        validate_board(board, 2026, 8)
+
+    def test_schema_validates_game_identity_and_duplicate_player_game(self):
+        board = sample_board()
+        board["rows"][0]["game_id"] = "not-scheduled"
+        with self.assertRaisesRegex(ValueError, "not scheduled for this week"):
+            validate_board(board, 2026, 8)
+        board = sample_board()
+        board["rows"].append(dict(board["rows"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate player_id"):
+            validate_board(board, 2026, 8)
+
+    def test_week_completion_requires_every_scheduled_game_to_be_final(self):
+        import pandas as pd
+        from evaluation_utils import require_complete_regular_week
+
+        schedule = pd.DataFrame([
+            {"season": 2026, "week": 8, "game_type": "REG", "game_id": "a",
+             "home_team": "BUF", "away_team": "KC", "home_score": 20, "away_score": 17},
+            {"season": 2026, "week": 8, "game_type": "REG", "game_id": "b",
+             "home_team": "MIA", "away_team": "NE", "home_score": None, "away_score": None},
+            {"season": 2026, "week": 8, "game_type": "PRE", "game_id": "c",
+             "home_team": "NYJ", "away_team": "NYG", "home_score": None, "away_score": None},
+        ])
+        with self.assertRaisesRegex(ValueError, "1 of 2 scheduled game"):
+            require_complete_regular_week(schedule, 2026, 8)
+        schedule.loc[1, ["home_score", "away_score"]] = [24, 21]
+        self.assertEqual(len(require_complete_regular_week(schedule, 2026, 8)), 2)
+
+    def test_prediction_rows_must_match_player_game_schedule_pair(self):
+        import pandas as pd
+        from evaluation_utils import validate_predictions_against_schedule
+
+        predictions = pd.DataFrame([{"player_id": "p1", "game_id": "g1", "team": "BUF", "opponent": "KC"}])
+        games = pd.DataFrame([{"game_id": "g1", "home_team": "BUF", "away_team": "KC"}])
+        validate_predictions_against_schedule(predictions, games)
+        predictions.loc[0, "opponent"] = "MIA"
+        with self.assertRaisesRegex(ValueError, "team/opponent do not match schedule"):
+            validate_predictions_against_schedule(predictions, games)
+
+    def test_weekly_injury_loader_keeps_null_status_unknown(self):
+        import pandas as pd
+        import td_predictor_v5
+
+        original = td_predictor_v5.nflreadpy.load_injuries
+        try:
+            td_predictor_v5.nflreadpy.load_injuries = lambda seasons: pd.DataFrame([
+                {"season": 2026, "season_type": "REG", "week": 8, "gsis_id": "p1",
+                 "full_name": "Player One", "report_status": None,
+                 "practice_status": "Full Participation in Practice"},
+                {"season": 2026, "season_type": "REG", "week": 8, "gsis_id": "p2",
+                 "full_name": "Player Two", "report_status": "Questionable",
+                 "practice_status": "Limited Participation in Practice"},
+                {"season": 2026, "season_type": "REG", "week": 8, "gsis_id": "p3",
+                 "full_name": "Player Three", "report_status": "Out",
+                 "practice_status": "Did Not Participate In Practice"},
+            ])
+            report = td_predictor_v5.load_injury_report(2026, 8)
+            got = dict(zip(report.player_id, report.injury_status))
+            self.assertEqual(got, {"p1": "Unknown", "p2": "Questionable", "p3": "Out"})
+            self.assertTrue(report.attrs["week_report_available"])
+        finally:
+            td_predictor_v5.nflreadpy.load_injuries = original
+
+    def test_injury_status_normalizer_does_not_infer_active(self):
+        from td_predictor_v5 import normalize_injury_status
+        self.assertEqual(normalize_injury_status(None), "Unknown")
+        self.assertEqual(normalize_injury_status(""), "Unknown")
+        self.assertEqual(normalize_injury_status("Active"), "Active")
+        self.assertEqual(normalize_injury_status("Doubtful"), "Doubtful")
+        self.assertEqual(normalize_injury_status("Injured Reserve"), "IR")
+
+
+
+    def test_game_state_uses_scheduled_kickoff_and_final_scores(self):
+        import pandas as pd
+        from datetime import datetime, timezone
+        from td_predictor_v5 import get_week_game_statuses
+
+        schedule = pd.DataFrame([{
+            "season": 2026, "week": 7, "game_type": "REG", "game_id": "g1",
+            "home_team": "PHI", "away_team": "DAL", "gameday": "2026-10-26",
+            "gametime": "20:15", "home_score": None, "away_score": None,
+        }])
+        before = datetime(2026, 10, 27, 0, 14, tzinfo=timezone.utc)
+        after = datetime(2026, 10, 27, 0, 16, tzinfo=timezone.utc)
+        self.assertEqual(set(get_week_game_statuses(schedule, 2026, 7, before).values()), {"Upcoming"})
+        self.assertEqual(set(get_week_game_statuses(schedule, 2026, 7, after).values()), {"In Progress"})
+        schedule.loc[0, ["home_score", "away_score"]] = [24, 20]
+        self.assertEqual(set(get_week_game_statuses(schedule, 2026, 7, before).values()), {"Final"})
+
+    def test_injury_loader_marks_absent_week_report_unavailable(self):
+        import pandas as pd
+        import td_predictor_v5
+
+        original = td_predictor_v5.nflreadpy.load_injuries
+        try:
+            td_predictor_v5.nflreadpy.load_injuries = lambda seasons: pd.DataFrame([
+                {"season": 2026, "season_type": "REG", "week": 7, "gsis_id": "p1",
+                 "full_name": "Player One", "report_status": "Questionable"},
+            ])
+            report = td_predictor_v5.load_injury_report(2026, 8)
+            self.assertTrue(report.empty)
+            self.assertFalse(report.attrs["week_report_available"])
+        finally:
+            td_predictor_v5.nflreadpy.load_injuries = original
+
+    def test_training_data_requires_completed_week_provenance_and_cutoff(self):
+        import pandas as pd
+        from evaluation_utils import validate_training_data_frame
+
+        valid = pd.DataFrame([{
+            "player_id": "p1", "game_id": "g1", "season": 2025, "week": 8,
+            "actual_td": 1, "td_score": 55.0, "td_estimate": 8.0,
+            "week_complete": True, "prediction_origin": "retrospective_backfill",
+            "prediction_generated_at": "2026-10-26T20:00:00+00:00",
+            "feature_cutoff_season": 2025, "feature_cutoff_week": 7,
+        }])
+        validate_training_data_frame(valid)
+        incomplete = valid.copy()
+        incomplete["week_complete"] = False
+        with self.assertRaisesRegex(ValueError, "not verified complete"):
+            validate_training_data_frame(incomplete)
+        leaked = valid.copy()
+        leaked["feature_cutoff_week"] = 8
+        with self.assertRaisesRegex(ValueError, "pre-week cutoff"):
+            validate_training_data_frame(leaked)
+        legacy = valid.drop(columns=["prediction_generated_at"])
+        with self.assertRaisesRegex(ValueError, "lacks reliability metadata"):
+            validate_training_data_frame(legacy)
+
+
+    def test_v6_holdout_excludes_same_and_later_seasons_from_training(self):
+        import pandas as pd
+        from model_v6 import chronological_holdout
+
+        frame = pd.DataFrame({"season": [2023, 2024, 2025, 2026], "x": [1, 2, 3, 4]})
+        train, test = chronological_holdout(frame, 2025)
+        self.assertEqual(set(train.season), {2023, 2024})
+        self.assertEqual(set(test.season), {2025})
 
 if __name__ == "__main__":
     unittest.main()

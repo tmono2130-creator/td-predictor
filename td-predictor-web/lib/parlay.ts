@@ -59,7 +59,7 @@ export function quantile(sortedAsc: number[], q: number): number {
 /** Players still available to parlay (games not final), best first. */
 export function eligiblePool(board: BoardPlayer[]): BoardPlayer[] {
   return board
-    .filter((p) => p.game_status !== "Final")
+    .filter((p) => p.game_status === "Upcoming")
     .slice()
     .sort((a, b) => (b.td_score ?? 0) - (a.td_score ?? 0));
 }

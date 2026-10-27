@@ -31,14 +31,15 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from td_predictor_v5 import get_predictions, get_final_scores, load_schedule
+from td_predictor_v5 import get_predictions, get_final_scores, load_schedule, scheduled_kickoff_utc
+from evaluation_utils import regular_week_games, validate_predictions_against_schedule
 from game_breakdown import load_breakdown_context, build_game_from_context, list_week_games
 from data_schema import SCHEMA_VERSION, SUPPORTED_WEEKS, validate_board, validate_breakdowns
 
 BOARD_COLUMNS = [
-    "player_id", "player", "team", "position", "opponent",
+    "player_id", "game_id", "player", "team", "position", "opponent",
     "td_score", "td_estimate", "games", "injury_status",
-    "game_status", "actual_scored_td", "is_home",
+    "game_status", "prediction_timing", "actual_scored_td", "is_home",
 ]
 
 
@@ -77,21 +78,67 @@ def detect_current_week(season):
     return int(upcoming["week"].min())
 
 
-def board_payload(scored, season, week, model_in_use, final_games):
-    cols = [c for c in BOARD_COLUMNS if c in scored.columns]
-    rows = scored[cols].copy()
+def board_payload(scored, season, week, model_in_use, final_games, schedule):
+    games_df = regular_week_games(schedule, season, week)
+    if games_df is None or games_df.empty:
+        raise ValueError(f"No regular-season games found for {season} week {week}.")
+
+    generated = datetime.now(timezone.utc)
+    game_records = []
+    team_to_game = {}
+    for row in games_df.itertuples(index=False):
+        game_id = str(getattr(row, "game_id", "") or "").strip()
+        if not game_id:
+            raise ValueError(f"Schedule game for {row.away_team}@{row.home_team} has no game_id.")
+        kickoff = scheduled_kickoff_utc(row)
+        if kickoff is None:
+            raise ValueError(f"Schedule game {game_id} has no valid date and kickoff time.")
+        timing = "pregame_snapshot" if generated < kickoff else "historical_backfill"
+        game_records.append({
+            "game_id": game_id,
+            "away_team": str(row.away_team),
+            "home_team": str(row.home_team),
+            "kickoff_utc": kickoff.isoformat(timespec="seconds"),
+            "prediction_timing": timing,
+        })
+        for team in (str(row.away_team), str(row.home_team)):
+            if team in team_to_game:
+                raise ValueError(f"Team {team} appears in multiple {season} week {week} games.")
+            team_to_game[team] = game_id
+
+    rows = scored.copy()
+    if "game_id" not in rows.columns:
+        rows["game_id"] = rows["team"].astype(str).map(team_to_game)
+    rows["game_id"] = rows["game_id"].fillna(rows["team"].astype(str).map(team_to_game))
+    if rows["game_id"].isna().any():
+        bad_team = rows.loc[rows["game_id"].isna(), "team"].iloc[0]
+        raise ValueError(f"Prediction row team {bad_team!r} is not in the selected week's schedule.")
+    timing_by_game = {g["game_id"]: g["prediction_timing"] for g in game_records}
+    rows["prediction_timing"] = rows["game_id"].map(timing_by_game)
+    validate_predictions_against_schedule(rows, games_df)
+
+    cols = [c for c in BOARD_COLUMNS if c in rows.columns]
+    rows = rows[cols].copy()
     for c in ("td_score", "td_estimate"):
         rows[c] = pd.to_numeric(rows[c], errors="coerce").round(3)
     if "games" in rows.columns:
         rows["games"] = pd.to_numeric(rows["games"], errors="coerce").fillna(0).astype(int)
     if "actual_scored_td" in rows.columns:
         rows["actual_scored_td"] = rows["actual_scored_td"].fillna(False).astype(bool)
+
+    report_available = bool(scored.get("injury_report_available", pd.Series(dtype=bool)).fillna(False).any())
     return {
         "meta": {
             "season": int(season), "week": int(week),
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "generated_at": generated.isoformat(timespec="seconds"),
             "model": model_in_use,
             "final_games": final_games,
+            "games": game_records,
+            "injury_report": {
+                "source": "nflverse weekly official injury reports",
+                "week_available": report_available,
+                "unknown_is_not_active": True,
+            },
         },
         "rows": df_records(rows),
     }
@@ -119,8 +166,9 @@ def export_board(season, week, out_dir):
     if model_in_use == "composite":
         print("  NOTE: no fitted model was applied (model_v6.joblib not found next to where you "
               "ran this, or scikit-learn missing). The site will show composite-model numbers.")
-    final_games = get_final_scores(load_schedule(season), season, week)
-    payload = board_payload(scored, season, week, model_in_use, final_games)
+    schedule = load_schedule(season)
+    final_games = get_final_scores(schedule, season, week)
+    payload = board_payload(scored, season, week, model_in_use, final_games, schedule)
     return payload
 
 
@@ -152,7 +200,7 @@ def publish_week(season, week, board, breakdowns, out_dir):
     """Write versioned weekly artifacts, then atomically publish the manifest pointer."""
     validate_board(board, season, week)
     if breakdowns is not None:
-        validate_breakdowns(breakdowns, season, week)
+        validate_breakdowns(breakdowns, season, week, board.get("meta", {}).get("games"))
 
     manifest_path = os.path.join(out_dir, "manifest.json")
     if os.path.exists(manifest_path):

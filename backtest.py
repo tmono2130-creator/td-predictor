@@ -1,33 +1,16 @@
 """
-BACKTEST — validates the TD predictor against real completed games.
+RETROSPECTIVE V5 BACKTEST — rebuilds historical feature rows and matches them
+against completed rushing/receiving TD outcomes. This is not an archived
+as-published pregame forecast record. Player features are cut off before the
+target week; current source vintages, historical roster snapshots, and exact
+injury-feed versions are not preserved by the repository.
 
-For every week of a season you specify, this:
-  1. Runs the model exactly as it would have at the time (only using data
-     that existed before that week -- no lookahead/hindsight bias).
-  2. Pulls the ACTUAL results for that week (who really scored).
-  3. Compares predicted rankings/scores against real outcomes.
-
-Outputs:
-  - A calibration table: when the model says "~40%", did players in that
-    score range actually score ~40% of the time historically?
-  - Top-N hit rate: of the model's top 10/20/30 each week, how many
-    actually scored?
-  - Component correlation: which of the 6 scored components (opportunity,
-    red_zone, efficiency, matchup, team_environment, role) actually
-    correlates with real scoring -- vs. which ones are dead weight in
-    the current WEIGHTS dict.
-  - If scikit-learn is installed, a logistic regression fit on the
-    components suggests data-driven weights to compare against the
-    current hand-set ones (a SUGGESTION to consider, not something this
-    script applies automatically -- changing WEIGHTS is still your call).
+Incomplete weeks are skipped. Outcomes are joined on player_id + game_id,
+and each result is labeled retrospective_backfill. Use the output to inspect
+the historical reconstruction, not as proof of production pregame accuracy.
 
 USAGE:
-    python backtest.py --season 2025 --start-week 2 --end-week 18
-
-NOTE: this reruns the full data pipeline once per week, so a full-season
-backtest can take several minutes -- it's intentionally not optimized for
-speed on a first pass. If you run this often, it's worth caching the
-season-level data loads instead of reloading them every week.
+    python backtest.py --season 2025 --start-week 1 --end-week 18
 """
 
 import argparse
@@ -36,7 +19,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from td_predictor_v5 import get_predictions, load_player_stats, clean_num
+from td_predictor_v5 import get_predictions, load_player_stats, clean_num, load_schedule
+from evaluation_utils import require_complete_regular_week, validate_predictions_against_schedule
 
 COMPONENTS = [
     "opportunity_score", "red_zone_score", "efficiency_score",
@@ -45,44 +29,69 @@ COMPONENTS = [
 
 
 def load_actual_results(season, week):
-    """Who actually scored a TD in this specific week, by player_id."""
+    """Completed-game rushing/receiving TD labels by player and game."""
     stats = load_player_stats([season])
     stats["week"] = clean_num(stats["week"])
     wk = stats[stats["week"] == week].copy()
-
+    if "season_type" in wk.columns:
+        wk = wk[wk["season_type"].astype(str).str.upper() == "REG"]
+    if wk.empty or not {"player_id", "game_id"}.issubset(wk.columns):
+        raise ValueError(f"No safely keyed player-game outcomes available for {season} week {week}.")
     for col in ["receiving_tds", "rushing_tds"]:
         if col not in wk.columns:
             wk[col] = 0
         wk[col] = clean_num(wk[col])
-
     wk["actual_td"] = ((wk["receiving_tds"] + wk["rushing_tds"]) > 0).astype(int)
     wk["player_id"] = wk["player_id"].astype(str)
-    return wk[["player_id", "actual_td"]].drop_duplicates("player_id")
+    wk["game_id"] = wk["game_id"].astype(str)
+    return wk.groupby(["player_id", "game_id"], as_index=False)["actual_td"].max()
 
 
 def run_backtest(season, start_week, end_week):
     all_weeks = []
+    schedule = load_schedule(season)
 
     for week in range(start_week, end_week + 1):
         print(f"\n--- Week {week} ---")
         try:
-            predicted, matchups = get_predictions(season, week)
+            games = require_complete_regular_week(schedule, season, week)
+            predicted, _ = get_predictions(season, week)
+            validate_predictions_against_schedule(predicted, games)
+            actual = load_actual_results(season, week)
+            merged = predicted.merge(actual, on=["player_id", "game_id"], how="left", validate="one_to_one")
         except Exception as e:
             print(f"  Skipping week {week}: {e}")
             continue
 
-        actual = load_actual_results(season, week)
-        merged = predicted.merge(actual, on="player_id", how="left")
         merged["actual_td"] = merged["actual_td"].fillna(0).astype(int)
         merged["week"] = week
-
+        merged["season"] = season
+        merged["prediction_origin"] = "retrospective_backfill"
         all_weeks.append(merged)
-        print(f"  {len(merged)} players scored, {merged['actual_td'].sum()} actually scored a TD")
+        print(f"  {len(merged)} player/game rows, {merged['actual_td'].sum()} actually scored a TD")
 
     if not all_weeks:
-        raise RuntimeError("No weeks produced results -- check season/week range.")
+        raise RuntimeError("No complete weeks produced results -- check season/week range and data feeds.")
 
-    return pd.concat(all_weeks, ignore_index=True)
+    result = pd.concat(all_weeks, ignore_index=True)
+    duplicate = result.duplicated(["season", "week", "player_id", "game_id"], keep=False)
+    if duplicate.any():
+        raise RuntimeError("Backtest produced duplicate player/game rows.")
+    return result
+
+
+def probability_metrics(df):
+    """Descriptive probability metrics for retrospective reconstructions."""
+    y = pd.to_numeric(df["actual_td"], errors="raise").to_numpy(dtype=float)
+    p = (pd.to_numeric(df["td_estimate"], errors="raise").to_numpy(dtype=float) / 100.0)
+    p = np.clip(p, 1e-9, 1 - 1e-9)
+    return {
+        "actual_rate_pct": float(y.mean() * 100),
+        "mean_estimate_pct": float(p.mean() * 100),
+        "mean_bias_pp": float((p.mean() - y.mean()) * 100),
+        "brier": float(np.mean((p - y) ** 2)),
+        "log_loss": float(np.mean(-(y * np.log(p) + (1 - y) * np.log(1 - p)))),
+    }
 
 
 def calibration_table(df, bins=10):
@@ -154,6 +163,8 @@ def main():
     results = run_backtest(args.season, args.start_week, args.end_week)
     results.to_csv(f"backtest_{args.season}_wk{args.start_week}-{args.end_week}.csv", index=False)
 
+    print("\nRETROSPECTIVE RECONSTRUCTION — not a stored pregame prediction record")
+    print(pd.Series(probability_metrics(results)).to_string())
     print("\n" + "=" * 70)
     print("CALIBRATION (does 'Est. TD%' mean what it says?)")
     print("=" * 70)

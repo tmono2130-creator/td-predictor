@@ -2,7 +2,8 @@ import argparse
 import os
 import random
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 try:
     import joblib
@@ -344,65 +345,77 @@ def load_schedule(season):
         return pd.DataFrame()
 
 
+def normalize_injury_status(value):
+    """Normalize only explicit official game designations; blanks stay Unknown."""
+    if value is None or pd.isna(value):
+        return "Unknown"
+    status = str(value).strip().casefold()
+    aliases = {
+        "active": "Active",
+        "questionable": "Questionable",
+        "doubtful": "Doubtful",
+        "out": "Out",
+        "ir": "IR",
+        "injured reserve": "IR",
+        "injured_reserve": "IR",
+    }
+    return aliases.get(status, "Unknown")
+
+
 def load_injury_report(season, week):
-    """
-    Official team-submitted injury report (Out/Doubtful/Questionable/IR),
-    same source ESPN and NFL.com use -- not derived from betting markets
-    at all. This is the honest way to answer "is this player even live
-    tonight," instead of inferring it from sportsbook prop availability.
-
-    Note: this reflects the practice-week report (Wed/Thu/Fri designations
-    plus final Friday status), which is normally the most current public
-    info available at build time. It does NOT capture the official
-    gameday-inactives list published ~90 minutes before kickoff -- there's
-    no free structured feed for that; the printed Friday status is the
-    closest free, legitimate proxy.
-
-    Returns BOTH a player_id-based and a name-based lookup. The ID-based
-    join is tried first (more precise), but nflverse tables have a history
-    of using inconsistent ID column names across datasets (player_id vs
-    gsis_id vs nfl_id -- this exact issue bit the roster-team-update logic
-    earlier in this project). If the ID join comes back suspiciously
-    empty, get_predictions() falls back to a name match instead of
-    silently reporting everyone as "Active".
-    """
+    """Load the official nflverse weekly report; missing designations remain Unknown."""
+    empty = pd.DataFrame(columns=["player_id", "player_name", "injury_status", "practice_status"])
+    empty.attrs.update({"source_loaded": False, "week_report_available": False})
     try:
         injuries = to_pandas(nflreadpy.load_injuries(seasons=[season]))
     except Exception as e:
         print(f"Injury report warning: {e}")
-        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
+        empty.attrs["source_error"] = str(e)
+        return empty
 
     if injuries.empty:
-        print("Injury report: source returned no rows at all for this season.")
-        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
+        print("Injury report: source returned no rows for this season.")
+        empty.attrs["source_loaded"] = True
+        return empty
 
+    if "season" in injuries.columns:
+        injuries = injuries[pd.to_numeric(injuries["season"], errors="coerce") == season]
+    type_col = "season_type" if "season_type" in injuries.columns else "game_type"
+    if type_col in injuries.columns:
+        injuries = injuries[injuries[type_col].astype(str).str.strip().str.upper() == "REG"]
     if "week" in injuries.columns:
-        before = len(injuries)
+        season_rows = len(injuries)
         injuries = injuries[pd.to_numeric(injuries["week"], errors="coerce") == week]
-        print(f"Injury report: {before} total rows for {season}, {len(injuries)} for week {week}.")
+        print(f"Injury report: {season_rows} regular-season rows, {len(injuries)} for week {week}.")
 
-    id_col = next((c for c in ["player_id", "gsis_id", "nfl_id"] if c in injuries.columns), None)
+    # nflverse's documented primary key is gsis_id; keep aliases for older payloads.
+    id_col = next((c for c in ["gsis_id", "player_id", "nfl_id"] if c in injuries.columns), None)
     name_col = next((c for c in ["full_name", "player_name", "player_display_name"]
-                      if c in injuries.columns), None)
-    status_col = next((c for c in ["report_status", "game_status", "status"] if c in injuries.columns), None)
+                     if c in injuries.columns), None)
+    status_col = next((c for c in ["report_status", "game_status", "status"]
+                       if c in injuries.columns), None)
+    practice_col = next((c for c in ["practice_status"] if c in injuries.columns), None)
 
-    if status_col is None:
-        print(f"Injury report warning: no status column found. Columns were: "
-              f"{sorted(injuries.columns.tolist())}")
-        return pd.DataFrame(columns=["player_id", "player_name", "injury_status"])
+    out = pd.DataFrame(index=injuries.index)
+    out["player_id"] = injuries[id_col].fillna("").astype(str).str.strip() if id_col else ""
+    out["player_name"] = (injuries[name_col].fillna("").astype(str).str.strip().str.casefold()
+                          if name_col else "")
+    out["injury_status"] = (injuries[status_col].map(normalize_injury_status)
+                            if status_col else "Unknown")
+    out["practice_status"] = (injuries[practice_col].fillna("").astype(str).str.strip()
+                              if practice_col else "")
 
-    out = pd.DataFrame()
-    out["player_id"] = injuries[id_col].astype(str) if id_col else ""
-    out["player_name"] = injuries[name_col].astype(str).str.strip().str.lower() if name_col else ""
-    out["injury_status"] = injuries[status_col]
-    out = out.dropna(subset=["injury_status"])
-    out = out[out["injury_status"].astype(str).str.strip() != ""]
-    out = out.drop_duplicates("player_id", keep="last") if id_col else out.drop_duplicates("player_name", keep="last")
-
-    print(f"Injury report: {len(out)} players with a non-empty status this week "
+    key = "player_id" if id_col else "player_name"
+    out = out[out[key] != ""].copy()
+    if "date_modified" in injuries.columns:
+        out["_date_modified"] = pd.to_datetime(injuries.loc[out.index, "date_modified"], errors="coerce")
+        out = out.sort_values("_date_modified").drop(columns="_date_modified")
+    out = out.drop_duplicates(key, keep="last")
+    out.attrs.update({"source_loaded": True, "week_report_available": not injuries.empty})
+    print(f"Injury report: {len(out)} weekly player rows; "
+          f"{(out['injury_status'] != 'Unknown').sum()} explicit game designations "
           f"(id_col={id_col}, name_col={name_col}, status_col={status_col}).")
-
-    return out
+    return out.reset_index(drop=True)
 
 
 def normalize_rosters(rosters):
@@ -443,65 +456,61 @@ def normalize_rosters(rosters):
 
 
 def build_matchups(schedule, season, week):
-    if schedule.empty:
+    from evaluation_utils import regular_week_games
+
+    games = regular_week_games(schedule, season, week)
+    if games is None or games.empty or not {"home_team", "away_team"}.issubset(games.columns):
         return {}
-    required = {"week", "home_team", "away_team"}
-    if not required.issubset(schedule.columns):
-        print("Schedule missing expected columns:", sorted(schedule.columns.tolist()))
-        return {}
-    s = schedule.copy()
-    s["week"] = pd.to_numeric(s["week"], errors="coerce")
-    s = s[s["week"] == week]
-    if "season_type" in s.columns:
-        regular = s[s["season_type"].astype(str).str.lower().isin(
-            ["reg", "regular", "regular season"])]
-        if not regular.empty:
-            s = regular
     matchups = {}
-    for _, row in s.iterrows():
-        home, away = str(row["home_team"]), str(row["away_team"])
-        if home and away and home != "nan" and away != "nan":
+    for row in games.itertuples(index=False):
+        home, away = str(row.home_team), str(row.away_team)
+        if home and away and home != "nan" and away != "nan" and home != away:
             matchups[home] = away
             matchups[away] = home
     return matchups
 
 
-def get_already_played_teams(schedule, season, week):
-    """
-    Which teams' games for this week have already happened (Wed/Thu
-    games early in a week that's mostly Sun/Mon). build_matchups() only
-    filters by week number, so without this, a Thursday game's players
-    show up identically to Sunday's -- even though the outcome is
-    already known and there's nothing left to "predict."
-
-    This is a DATE-level check (not exact kickoff time), which is
-    accurate as soon as it's a different calendar day than the game --
-    the normal way you'd actually be checking mid-week. It won't be
-    perfectly precise for a game that's currently in progress today
-    (kickoff already passed but still same calendar date) -- that's a
-    known, minor edge case, not worth the timezone complexity to fix.
-    """
-    if schedule.empty or "week" not in schedule.columns or "gameday" not in schedule.columns:
-        return set()
-
-    s = schedule.copy()
-    s["week"] = pd.to_numeric(s["week"], errors="coerce")
-    s = s[s["week"] == week]
-    if "season_type" in s.columns:
-        regular = s[s["season_type"].astype(str).str.lower().isin(
-            ["reg", "regular", "regular season"])]
-        if not regular.empty:
-            s = regular
-
+def scheduled_kickoff_utc(row):
+    """nflverse schedule gametimes are Eastern Time; return UTC or None."""
+    day, game_time = getattr(row, "gameday", None), getattr(row, "gametime", None)
+    if day is None or game_time is None or pd.isna(day) or pd.isna(game_time):
+        return None
     try:
-        s["gameday_parsed"] = pd.to_datetime(s["gameday"], errors="coerce").dt.date
-    except Exception as e:
-        print(f"Could not parse schedule dates for already-played check: {e}")
-        return set()
+        local = datetime.strptime(f"{str(day)[:10]} {str(game_time)[:5]}", "%Y-%m-%d %H:%M")
+        return local.replace(tzinfo=ZoneInfo("America/New_York")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
-    today = datetime.now().date()
-    played = s[s["gameday_parsed"] < today]
-    return set(played["home_team"].astype(str)) | set(played["away_team"].astype(str))
+
+def get_week_game_statuses(schedule, season, week, now=None):
+    """Map scheduled teams to Upcoming, In Progress, Final, or Unknown."""
+    from evaluation_utils import regular_week_games
+
+    games = regular_week_games(schedule, season, week)
+    if games is None or games.empty:
+        return {}
+    now = now or datetime.now(timezone.utc)
+    states = {}
+    for row in games.itertuples(index=False):
+        home, away = str(row.home_team), str(row.away_team)
+        has_final_score = (
+            hasattr(row, "home_score") and hasattr(row, "away_score")
+            and pd.notna(row.home_score) and pd.notna(row.away_score)
+        )
+        kickoff = scheduled_kickoff_utc(row)
+        state = "Final" if has_final_score else (
+            "In Progress" if kickoff is not None and kickoff <= now else
+            "Upcoming" if kickoff is not None else "Unknown"
+        )
+        states[home] = state
+        states[away] = state
+    return states
+
+
+def get_already_played_teams(schedule, season, week):
+    """Teams with confirmed final scores this week; in-progress games are not final."""
+    return {team for team, state in get_week_game_statuses(schedule, season, week).items()
+            if state == "Final"}
 
 
 def get_final_scores(schedule, season, week):
@@ -514,9 +523,10 @@ def get_final_scores(schedule, season, week):
     """
     if schedule.empty:
         return []
-    s = schedule.copy()
-    s["week"] = pd.to_numeric(s["week"], errors="coerce")
-    s = s[s["week"] == week]
+    from evaluation_utils import regular_week_games
+    s = regular_week_games(schedule, season, week)
+    if s is None or s.empty:
+        return []
     score_cols = {"home_score", "away_score"}
     if not score_cols.issubset(s.columns):
         return []
@@ -546,6 +556,8 @@ def load_actual_scorers_this_week(season, week):
 
     stats["week"] = clean_num(stats["week"])
     wk = stats[stats["week"] == week].copy()
+    if "season_type" in wk.columns:
+        wk = wk[wk["season_type"].astype(str).str.upper() == "REG"]
     for col in ["receiving_tds", "rushing_tds"]:
         if col not in wk.columns:
             wk[col] = 0
@@ -853,7 +865,7 @@ def score_players(profiles, team_environment, defensive_matchups):
             "Out": 0.05, "IR": 0.0, "Injured Reserve": 0.0,
             "Doubtful": 0.15, "Questionable": 0.75,
         }
-        df["injury_status"] = df["injury_status"].fillna("Active")
+        df["injury_status"] = df["injury_status"].fillna("Unknown")
         df["td_score"] = df["td_score"] * df["injury_status"].map(injury_multiplier).fillna(1.0)
 
     # Calibrated against real 2025-season outcomes via backtest.py
@@ -937,7 +949,7 @@ def _eligible_pool(scored_df):
     """Players actually available to parlay: excludes already-final games."""
     pool = scored_df
     if "game_status" in pool.columns:
-        pool = pool[pool["game_status"] != "Final"]
+        pool = pool[pool["game_status"] == "Upcoming"]
     return pool.sort_values("td_score", ascending=False).reset_index(drop=True)
 
 
@@ -1205,6 +1217,8 @@ def get_predictions(season, week, status_callback=None):
     status("Loading injury report...")
     injuries = load_injury_report(season, week)
     profiles["player_id"] = profiles["player_id"].astype(str)
+    injury_report_available = bool(injuries.attrs.get("week_report_available", not injuries.empty))
+    profiles["injury_report_available"] = injury_report_available
 
     id_matches = 0
     if not injuries.empty and "player_id" in injuries.columns:
@@ -1228,14 +1242,26 @@ def get_predictions(season, week, status_callback=None):
         status(f"Injury report: matched {name_matches} players by name (fallback).")
         profiles = profiles.drop(columns=["_name_lower"])
     else:
-        status("Injury report: no usable data this run -- all players default to Active.")
+        status("Injury report: no weekly report rows available; unmatched players remain Unknown.")
         profiles["injury_status"] = None
 
-    profiles["injury_status"] = profiles["injury_status"].fillna("Active")
+    profiles["injury_status"] = profiles["injury_status"].fillna("Unknown")
 
     profiles["opponent"] = profiles["team"].map(matchups)
     profiles = profiles[profiles["opponent"].notna()].copy()
     profiles = profiles[profiles["position"].isin(POSITIONS)].copy()
+    from evaluation_utils import regular_week_games
+    week_games = regular_week_games(schedule, season, week)
+    team_to_game = {}
+    if week_games is not None and not week_games.empty:
+        for game in week_games.itertuples(index=False):
+            game_id = str(getattr(game, "game_id", "") or "").strip()
+            if not game_id:
+                game_id = f"{season}_{week:02}_{game.away_team}_{game.home_team}"
+            team_to_game[str(game.home_team)] = game_id
+            team_to_game[str(game.away_team)] = game_id
+    profiles["game_id"] = profiles["team"].astype(str).map(team_to_game)
+    profiles = profiles[profiles["game_id"].notna()].copy()
 
     team_environment = build_team_environment(all_stats)
 
@@ -1256,10 +1282,9 @@ def get_predictions(season, week, status_callback=None):
     if scored.empty:
         raise RuntimeError("No players could be scored.")
 
-    played_teams = get_already_played_teams(schedule, season, week)
-    scored["game_status"] = scored["team"].apply(
-        lambda t: "Final" if t in played_teams else "Upcoming"
-    )
+    game_statuses = get_week_game_statuses(schedule, season, week)
+    scored["game_status"] = scored["team"].map(game_statuses).fillna("Unknown")
+    played_teams = {team for team, state in game_statuses.items() if state == "Final"}
 
     if played_teams:
         actual = load_actual_scorers_this_week(season, week)

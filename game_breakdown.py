@@ -119,6 +119,8 @@ def list_week_games(season, week):
     sched = load_schedule(season)
     if sched.empty:
         return []
+    if "season" in sched.columns:
+        sched = sched[pd.to_numeric(sched["season"], errors="coerce") == season]
     s = sched[pd.to_numeric(sched["week"], errors="coerce") == week]
     if "game_type" in s.columns:
         reg = s[s["game_type"].astype(str).str.upper() == "REG"]
@@ -318,7 +320,7 @@ def build_player_frames(pbp, window, team, info, injury_by_id, injury_by_name, f
 
     def status_for(pid, name):
         s = injury_by_id.get(pid) or injury_by_name.get(str(name).strip().lower())
-        return s if isinstance(s, str) and s.strip() else "Active"
+        return s if isinstance(s, str) and s.strip() else "Unknown"
     u["status"] = [status_for(pid, nm) for pid, nm in zip(u.index, u["name"])]
 
     keep = (u["carries"] + u["targets"] >= 5) | (u["rz_opps"] >= 1) | (u["tds"] >= 1)

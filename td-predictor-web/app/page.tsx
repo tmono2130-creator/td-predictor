@@ -4,9 +4,8 @@
  * TD Likelihood — the website front end.
  *
  * This page does NOT run the model. The model lives in Python; export_json.py
- * runs it and writes two static files this page reads:
- *     /data/board.json        the ranked player board for the week
- *     /data/breakdowns.json   a scouting report for every game that week
+ * runs it and writes immutable weekly JSON snapshots referenced by:
+ *     /data/manifest.json    the season/week index and paths to each snapshot
  * Parlay math and the odds comparison run here in the browser, using the same
  * logic as the Python app (lib/parlay.ts is a tested port).
  */
@@ -28,17 +27,28 @@ import {
 
 type FinalGame = { away_team: string; away_score: number; home_team: string; home_score: number };
 
+type ScheduledGame = {
+  game_id: string;
+  away_team: string;
+  home_team: string;
+  kickoff_utc: string;
+  prediction_timing: "pregame_snapshot" | "historical_backfill" | "unknown";
+};
+
 type BoardMeta = {
   season: number;
   week: number;
   generated_at: string;
   model: "fitted" | "composite";
   final_games: FinalGame[];
+  games: ScheduledGame[];
+  injury_report: { source: string; week_available: boolean; unknown_is_not_active: true };
 };
 
 // What the JSON can contain: several fields can be null.
 type RawBoardRow = {
   player_id: string;
+  game_id: string;
   player: string;
   team: string;
   position: string;
@@ -46,8 +56,9 @@ type RawBoardRow = {
   td_score: number | null;
   td_estimate: number | null;
   games?: number | null;
-  injury_status?: string | null;
+  injury_status: string;
   game_status: string;
+  prediction_timing: "pregame_snapshot" | "historical_backfill" | "unknown";
   actual_scored_td?: boolean | null;
   is_home?: number | null;
 };
@@ -62,9 +73,11 @@ type DataManifest = {
 
 // What the rest of the page works with: nulls already resolved.
 type BoardRow = BoardPlayer & {
+  game_id: string;
   position: string;
   games: number;
   injury_status: string;
+  prediction_timing: "pregame_snapshot" | "historical_backfill" | "unknown";
   actual_scored_td: boolean;
   is_home: number | null;
 };
@@ -90,7 +103,7 @@ type BreakdownsFile = {
 
 /* =============================== constants ============================== */
 
-const POSITIONS = ["QB", "RB", "WR", "TE"] as const;
+const POSITIONS = ["QB", "RB", "FB", "WR", "TE"] as const;
 const GROUPS = ["RB", "WR", "TE", "QB"] as const;
 
 const TEAM_NAMES: Record<string, string> = {
@@ -134,6 +147,7 @@ function normalizeBoard(file: BoardFile): BoardRow[] {
     const est = r.td_estimate ?? 0;
     return {
       player_id: r.player_id,
+      game_id: r.game_id,
       player: r.player,
       team: r.team,
       position: r.position,
@@ -142,7 +156,8 @@ function normalizeBoard(file: BoardFile): BoardRow[] {
       td_score: r.td_score ?? est,
       game_status: r.game_status,
       games: r.games ?? 0,
-      injury_status: r.injury_status ?? "Active",
+      injury_status: r.injury_status ?? "Unknown",
+      prediction_timing: r.prediction_timing,
       actual_scored_td: Boolean(r.actual_scored_td),
       is_home: r.is_home ?? null,
     };
@@ -333,17 +348,19 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
         (r) =>
           (team === "ALL" || r.team === team) &&
           positions.has(r.position) &&
-          (!hideFinal || r.game_status !== "Final") &&
+          (!hideFinal || r.game_status === "Upcoming") &&
           (needle === "" || r.player.toLowerCase().includes(needle)),
       )
       .sort(
-        (a, b) =>
-          (a.game_status === "Final" ? 1 : 0) - (b.game_status === "Final" ? 1 : 0) ||
-          b.td_estimate - a.td_estimate,
+        (a, b) => {
+          const stateOrder = { Upcoming: 0, "In Progress": 1, Final: 2, Unknown: 3 };
+          return stateOrder[a.game_status as keyof typeof stateOrder] - stateOrder[b.game_status as keyof typeof stateOrder] ||
+            b.td_estimate - a.td_estimate;
+        },
       );
   }, [rows, team, positions, search, hideFinal]);
 
-  const upcoming = useMemo(() => filtered.filter((r) => r.game_status !== "Final"), [filtered]);
+  const upcoming = useMemo(() => filtered.filter((r) => r.game_status === "Upcoming"), [filtered]);
   const top3 = upcoming.slice(0, 3);
   const maxEst = filtered.reduce((m, r) => Math.max(m, r.td_estimate), 1);
   const shown = filtered.slice(0, limit);
@@ -425,7 +442,7 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
           ))}
           <label className={styles.checkRow} style={{ marginLeft: 8 }}>
             <input type="checkbox" checked={hideFinal} onChange={(e) => setHideFinal(e.target.checked)} />
-            Hide finished games
+            Upcoming games only
           </label>
         </div>
       </div>
@@ -460,12 +477,15 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
                 <th>Result</th>
                 <th>Est. TD%</th>
                 <th>Sample</th>
-                <th>Status</th>
+                <th>Injury</th>
+                <th>Record timing</th>
               </tr>
             </thead>
             <tbody>
               {shown.map((r, i) => {
                 const isFinal = r.game_status === "Final";
+                const gameLabel = r.game_status === "In Progress" ? "🏈 In progress" :
+                  r.game_status === "Upcoming" ? "Upcoming" : r.game_status === "Final" ? "✅ Final" : "Unknown";
                 const alpha = Math.min(0.55, (r.td_estimate / maxEst) * 0.55);
                 return (
                   <tr key={r.player_id} className={isFinal ? styles.dim : undefined}>
@@ -477,7 +497,7 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
                     <td>
                       {r.is_home === 0 ? "@" : r.is_home === 1 ? "vs" : ""} {r.opponent}
                     </td>
-                    <td>{isFinal ? "✅ Final" : "Upcoming"}</td>
+                    <td>{gameLabel}</td>
                     <td>{isFinal ? (r.actual_scored_td ? "🎯 Scored TD" : "No TD") : "—"}</td>
                     <td
                       className={styles.numCell}
@@ -487,12 +507,12 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
                     </td>
                     <td>{r.games === 0 ? "🆕 No history" : `${r.games} games`}</td>
                     <td>
-                      {r.injury_status === "Active" ? (
-                        "Active"
-                      ) : (
-                        <span className={styles.warnText}>{r.injury_status}</span>
-                      )}
+                      {r.injury_status === "Active" ? "Active" : r.injury_status === "Unknown" ? (
+                        <span className={styles.muted}>Unknown</span>
+                      ) : <span className={styles.warnText}>{r.injury_status}</span>}
                     </td>
+                    <td>{r.prediction_timing === "pregame_snapshot" ? "Pregame snapshot" :
+                      r.prediction_timing === "historical_backfill" ? "Historical backfill" : "Timing unknown"}</td>
                   </tr>
                 );
               })}
@@ -514,7 +534,7 @@ function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
 
 function ParlayTab({ rows }: { rows: BoardRow[] }) {
   const upcoming = useMemo(
-    () => rows.filter((r) => r.game_status !== "Final").sort((a, b) => b.td_estimate - a.td_estimate),
+    () => rows.filter((r) => r.game_status === "Upcoming").sort((a, b) => b.td_estimate - a.td_estimate),
     [rows],
   );
   const [mode, setMode] = useState<"manual" | "auto">("manual");
@@ -670,7 +690,7 @@ type StoredComparison = { player_id: string; odds: string };
 
 function MarketTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
   const upcoming = useMemo(
-    () => rows.filter((r) => r.game_status !== "Final").sort((a, b) => b.td_estimate - a.td_estimate),
+    () => rows.filter((r) => r.game_status === "Upcoming").sort((a, b) => b.td_estimate - a.td_estimate),
     [rows],
   );
   const byId = useMemo(() => new Map(rows.map((r) => [r.player_id, r] as const)), [rows]);
@@ -848,6 +868,21 @@ function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardMeta; dataUrl: s
       </div>
     );
   }
+  if (data.meta.week !== boardMeta.week || data.meta.season !== boardMeta.season) {
+    return <div className={`${styles.notice} ${styles.noticeError}`}>
+      The breakdown file is for {data.meta.season} week {data.meta.week}, but the selected board is {boardMeta.season} week {boardMeta.week}. It was not displayed.
+    </div>;
+  }
+  const scheduledPairs = new Set(boardMeta.games.map((g) => `${g.away_team}@${g.home_team}`));
+  const mismatchedGame = keys.find((key) => {
+    const bd = data.games[key];
+    return !scheduledPairs.has(key) || !bd || bd.teams.join("@") !== key;
+  });
+  if (mismatchedGame) {
+    return <div className={`${styles.notice} ${styles.noticeError}`}>
+      Breakdown game {mismatchedGame} does not match the selected week&apos;s schedule. It was not displayed.
+    </div>;
+  }
   if (keys.length === 0) {
     return <div className={`${styles.notice} ${styles.noticeInfo}`}>No game breakdowns were generated for this week.</div>;
   }
@@ -856,7 +891,6 @@ function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardMeta; dataUrl: s
   const bd = data.games[active];
   const [away, home] = bd.teams;
   const team = side === 0 ? away : home;
-  const stale = data.meta.week !== boardMeta.week || data.meta.season !== boardMeta.season;
   const errorKeys = Object.keys(data.errors);
 
   return (
@@ -865,12 +899,6 @@ function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardMeta; dataUrl: s
         A scouting report built from play-by-play. It is separate from the model — it never changes a ranking or
         probability. Use it to see the usage and scoring patterns behind a matchup and make your own call.
       </p>
-      {stale && (
-        <div className={styles.notice}>
-          These breakdowns are for week {data.meta.week}, {data.meta.season}, but the board is week {boardMeta.week},{" "}
-          {boardMeta.season}. Re-run export_json.py to refresh both.
-        </div>
-      )}
       {errorKeys.length > 0 && (
         <div className={`${styles.notice} ${styles.noticeInfo}`}>Couldn&apos;t build: {errorKeys.join(", ")}.</div>
       )}
@@ -981,19 +1009,52 @@ function boardValidationError(value: BoardFile | null, season: number, week: num
   if (meta.season !== season || meta.week !== week) {
     return `The selected file contains ${meta.season} week ${meta.week}, not ${season} week ${week}.`;
   }
-  if (!Number.isFinite(Date.parse(meta.generated_at)) || !["fitted", "composite"].includes(meta.model) || !Array.isArray(meta.final_games)) {
+  if (!Number.isFinite(Date.parse(meta.generated_at)) || !["fitted", "composite"].includes(meta.model) ||
+      !Array.isArray(meta.final_games) || !Array.isArray(meta.games) || meta.games.length === 0 ||
+      !meta.injury_report || meta.injury_report.unknown_is_not_active !== true) {
     return "The selected board metadata is invalid.";
   }
-  const seen = new Set<string>();
+  const gameById = new Map<string, ScheduledGame>();
+  const scheduledTeam = new Map<string, string>();
   const teams = new Set(Object.keys(TEAM_NAMES));
+  for (const [index, game] of meta.games.entries()) {
+    if (!game || typeof game.game_id !== "string" || !game.game_id ||
+        !teams.has(game.home_team) || !teams.has(game.away_team) || game.home_team === game.away_team ||
+        !Number.isFinite(Date.parse(game.kickoff_utc)) ||
+        !["pregame_snapshot", "historical_backfill", "unknown"].includes(game.prediction_timing)) {
+      return `Scheduled game ${index + 1} is invalid.`;
+    }
+    if (gameById.has(game.game_id) || scheduledTeam.has(game.home_team) || scheduledTeam.has(game.away_team)) {
+      return `Scheduled game ${index + 1} duplicates a game or team.`;
+    }
+    gameById.set(game.game_id, game);
+    scheduledTeam.set(game.home_team, game.game_id);
+    scheduledTeam.set(game.away_team, game.game_id);
+  }
+  const seen = new Set<string>();
   for (const [index, row] of value.rows.entries()) {
     if (!row || typeof row !== "object") return `Board row ${index + 1} is invalid.`;
-    for (const field of ["player_id", "player", "position", "game_status"] as const) {
+    for (const field of ["player_id", "game_id", "player", "position", "game_status", "injury_status", "prediction_timing"] as const) {
       if (typeof row[field] !== "string" || !row[field].trim()) return `Board row ${index + 1} is missing ${field}.`;
     }
     if (seen.has(row.player_id)) return `The board contains duplicate player ID ${row.player_id}.`;
     seen.add(row.player_id);
     if (!teams.has(row.team) || !teams.has(row.opponent)) return `Board row ${index + 1} has an invalid team code.`;
+    const game = gameById.get(row.game_id);
+    if (!game || ![game.home_team, game.away_team].includes(row.team) ||
+        ![game.home_team, game.away_team].includes(row.opponent) || row.team === row.opponent) {
+      return `Board row ${index + 1} does not match a scheduled game.`;
+    }
+    if (!["Active", "Questionable", "Doubtful", "Out", "IR", "Unknown"].includes(row.injury_status)) {
+      return `Board row ${index + 1} has an invalid injury status.`;
+    }
+    if (!["Upcoming", "In Progress", "Final", "Unknown"].includes(row.game_status)) {
+      return `Board row ${index + 1} has an invalid game status.`;
+    }
+    if (!["pregame_snapshot", "historical_backfill", "unknown"].includes(row.prediction_timing) ||
+        row.prediction_timing !== game.prediction_timing) {
+      return `Board row ${index + 1} has invalid prediction timing.`;
+    }
     for (const field of ["td_score", "td_estimate"] as const) {
       if (typeof row[field] !== "number" || !Number.isFinite(row[field]) || row[field] < 0 || row[field] > 100) {
         return `Board row ${index + 1} has an invalid ${field}; expected a number from 0 to 100.`;
@@ -1047,6 +1108,9 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
               <span className={`${styles.pill} ${styles.pillAccent}`}>Week {data.meta.week} · {data.meta.season}</span>
               <span className={styles.pill}>Model: {data.meta.model === "fitted" ? "fitted (logistic regression)" : "hand-weighted composite"}</span>
               <span className={styles.pill}>Updated {new Date(data.meta.generated_at).toLocaleString()}</span>
+              <span className={styles.pill}>
+                {data.meta.injury_report.week_available ? "Weekly injury report available" : "Weekly injury report unavailable"}
+              </span>
             </>}
           </div>
         </header>
@@ -1069,10 +1133,10 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
         </div>}
 
         {data && !boardError && <>
-          <div hidden={tab !== "rankings"}><RankingsTab rows={rows} meta={data.meta} /></div>
-          <div hidden={tab !== "parlay"}><ParlayTab rows={rows} /></div>
-          <div hidden={tab !== "market"}><MarketTab rows={rows} meta={data.meta} /></div>
-          <div hidden={tab !== "breakdown"}><BreakdownTab boardMeta={data.meta} dataUrl={breakdownsUrl} /></div>
+          <div hidden={tab !== "rankings"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></div>
+          <div hidden={tab !== "parlay"}><ParlayTab key={`${season}:${week}`} rows={rows} /></div>
+          <div hidden={tab !== "market"}><MarketTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></div>
+          <div hidden={tab !== "breakdown"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} dataUrl={breakdownsUrl} /></div>
         </>}
         <footer className={styles.footer}>
           Data: nflverse (via nflreadpy). Est. TD% is a model&apos;s estimate from past play — not a guarantee and not a sportsbook price. For entertainment and analysis only; not betting advice. If gambling stops being fun, help is available at{" "}
