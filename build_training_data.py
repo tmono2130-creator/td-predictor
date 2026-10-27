@@ -6,6 +6,8 @@ exclude same-week outcomes and injury statuses with unknown publication time,
 and preserve source-version limitations in every row.
 """
 import argparse
+import hashlib
+import json
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path

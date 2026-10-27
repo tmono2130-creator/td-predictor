@@ -20,6 +20,7 @@ import path from 'node:path';
  try {
  await page.goto(base);await page.getByText('Leading TD estimates',{exact:true}).waitFor();
  await check('dashboard uses published snapshot',async()=>{assert.equal(await page.getByLabel('Week',{exact:true}).inputValue(),String(week));assert(await page.getByText(board.rows.slice().sort((a,b)=>b.td_estimate-a.td_estimate)[0].player,{exact:true}).count()>0)});
+ await check('snapshot model version, classification and freshness are visible',async()=>{await page.getByRole('status',{name:'Data freshness'}).waitFor();if(board.meta.model_version)assert(await page.locator('[title]').filter({hasText:'Version:'}).count()>0);assert(await page.getByText(({pregame_snapshot:'Pregame snapshot',historical_backfill:'Historical backfill',mixed_pregame_and_historical:'Mixed pregame / historical'}[board.meta.snapshot_classification] ?? 'Classification unavailable'),{exact:true}).count()>0)});
  await page.screenshot({path:'../work/dashboard-desktop.png',fullPage:true});
  await nav('Player Rankings');
  await check('rankings search and empty state',async()=>{await page.getByLabel('Search player',{exact:true}).fill('zzzz-no-player');await page.getByText('No players match these filters.').waitFor();await page.getByLabel('Search player',{exact:true}).fill('')});
