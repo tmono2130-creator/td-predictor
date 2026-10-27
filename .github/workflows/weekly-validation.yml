@@ -17,6 +17,7 @@ on:
       - evaluation_utils.py
       - historical_data.py
       - build_training_data.py
+      - td-predictor-web/**
 
 permissions:
   contents: read
@@ -31,6 +32,38 @@ env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
+  frontend:
+    name: Frontend production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: td-predictor-web
+    steps:
+      - name: Checkout approved feature revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install locked frontend dependencies
+        timeout-minutes: 5
+        run: npm ci --no-audit --no-fund
+      - name: Lint frontend
+        timeout-minutes: 3
+        run: npm run lint
+      - name: Test snapshot freshness
+        timeout-minutes: 2
+        run: node --experimental-strip-types --test scripts/freshness.test.mjs
+      - name: Build production frontend without deployment
+        timeout-minutes: 5
+        run: npm run build
+      - name: Confirm tracked files are unchanged
+        timeout-minutes: 1
+        run: git diff --exit-code HEAD -- .
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 40
