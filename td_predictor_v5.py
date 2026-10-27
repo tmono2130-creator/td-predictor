@@ -1147,7 +1147,7 @@ def print_rankings(df, top):
     print()
 
 
-def get_predictions(season, week, status_callback=None):
+def get_predictions(season, week, status_callback=None, historical_reconstruction=False):
     """
     Runs the full pipeline and returns (scored_df, matchups_dict).
     Reusable by the CLI (main, below) and by the Streamlit app --
@@ -1183,7 +1183,19 @@ def get_predictions(season, week, status_callback=None):
     redzone = load_redzone_opportunity(seasons_needed)
 
     status("Loading rosters and schedule...")
-    rosters = normalize_rosters(load_rosters(season))
+    if historical_reconstruction:
+        try:
+            weekly_rosters = to_pandas(nflreadpy.load_rosters_weekly(seasons=[season]))
+            weekly_rosters["week"] = pd.to_numeric(weekly_rosters.get("week"), errors="coerce")
+            if "game_type" in weekly_rosters:
+                weekly_rosters = weekly_rosters[weekly_rosters["game_type"].astype(str).str.upper() == "REG"]
+            rosters = normalize_rosters(weekly_rosters[weekly_rosters["week"] == week].copy())
+            if rosters.empty:
+                raise RuntimeError(f"No weekly roster snapshot for {season} week {week}.")
+        except Exception as e:
+            raise RuntimeError(f"Historical reconstruction requires a week-specific roster snapshot: {e}") from e
+    else:
+        rosters = normalize_rosters(load_rosters(season))
     schedule = load_schedule(season)
     matchups = build_matchups(schedule, season, week)
     if not matchups:
@@ -1215,7 +1227,9 @@ def get_predictions(season, week, status_callback=None):
     profiles = inject_missing_roster_players(profiles, rosters, matchups)
 
     status("Loading injury report...")
-    injuries = load_injury_report(season, week)
+    # Historical injury publication timestamps are unavailable; exclude this feature.
+    injuries = (pd.DataFrame(columns=["player_id", "injury_status"]) if historical_reconstruction
+                else load_injury_report(season, week))
     profiles["player_id"] = profiles["player_id"].astype(str)
     injury_report_available = bool(injuries.attrs.get("week_report_available", not injuries.empty))
     profiles["injury_report_available"] = injury_report_available
@@ -1286,7 +1300,7 @@ def get_predictions(season, week, status_callback=None):
     scored["game_status"] = scored["team"].map(game_statuses).fillna("Unknown")
     played_teams = {team for team, state in game_statuses.items() if state == "Final"}
 
-    if played_teams:
+    if played_teams and not historical_reconstruction:
         actual = load_actual_scorers_this_week(season, week)
         scored["player_id"] = scored["player_id"].astype(str)
         scored = scored.merge(actual, on="player_id", how="left")
@@ -1322,7 +1336,8 @@ def get_predictions(season, week, status_callback=None):
     # hand-weighted composite + calibration curve. This keeps the app
     # working even before a model file exists, and makes the fitted
     # model a drop-in upgrade rather than a hard dependency.
-    scored = apply_fitted_model(scored, status)
+    if not historical_reconstruction:
+        scored = apply_fitted_model(scored, status)
 
     # Already-played games sink to the bottom regardless of score -- the
     # outcome's already known, there's nothing left to predict for them.

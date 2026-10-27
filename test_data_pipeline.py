@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from data_schema import validate_board, validate_breakdowns
-from export_json import publish_week
+from export_json import board_payload, publish_week
 
 
 def sample_board(season=2026, week=8, player_id="00-0030001"):
@@ -90,6 +90,32 @@ class BoardSchemaTests(unittest.TestCase):
             validate_breakdowns(payload, 2026, 8, [{"away_team": "KC", "home_team": "BUF"}])
 
 
+class SnapshotMetadataTests(unittest.TestCase):
+    def test_snapshot_preserves_timing_model_source_and_probability_semantics(self):
+        import pandas as pd
+        from data_schema import validate_board
+
+        scored = pd.DataFrame([{
+            "player_id": "p1", "game_id": "2026_08_KC_BUF", "player": "Test Player",
+            "team": "BUF", "position": "RB", "opponent": "KC", "td_score": 55.0,
+            "td_estimate": 12.5, "games": 6, "injury_status": "Unknown",
+            "game_status": "Upcoming", "actual_scored_td": False, "is_home": 1,
+        }])
+        schedule = pd.DataFrame([{
+            "season": 2026, "week": 8, "game_type": "REG", "game_id": "2026_08_KC_BUF",
+            "home_team": "BUF", "away_team": "KC", "gameday": "2026-10-30",
+            "gametime": "20:15", "home_score": None, "away_score": None,
+        }])
+        board = board_payload(scored, 2026, 8, "composite", [], schedule)
+        validate_board(board, 2026, 8)
+        self.assertTrue(board["meta"]["model_version"].startswith("composite-sha256:"))
+        self.assertIn("nflreadpy", board["meta"]["source_versions"])
+        self.assertEqual(board["meta"]["snapshot_classification"], "pregame_snapshot")
+        row = board["rows"][0]
+        self.assertEqual(row["predicted_td_probability_pct"], 12.5)
+        self.assertEqual(row["snapshot_classification"], "pregame_snapshot")
+        self.assertEqual(row["prediction_timestamp_utc"], board["meta"]["generated_at"])
+        self.assertIn("not established as calibrated", board["meta"]["probability_semantics"])
 class WeeklyPublicationTests(unittest.TestCase):
     def test_publishes_separate_week_files_and_manifest(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
@@ -107,6 +133,21 @@ class WeeklyPublicationTests(unittest.TestCase):
             self.assertEqual(week8["meta"]["week"], 8)
             self.assertEqual(week9["meta"]["week"], 9)
 
+    def test_republishing_week_preserves_the_archived_snapshot(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            publish_week(2026, 8, sample_board(), None, tmp)
+            root = Path(tmp)
+            manifest_path = root / "manifest.json"
+            first = json.loads(manifest_path.read_text(encoding="utf-8"))
+            first_ref = first["seasons"]["2026"]["weeks"]["8"]["board"]
+            first_path = root / first_ref
+            first_bytes = first_path.read_bytes()
+            publish_week(2026, 8, sample_board(player_id="00-0030002"), None, tmp)
+            second = json.loads(manifest_path.read_text(encoding="utf-8"))
+            second_ref = second["seasons"]["2026"]["weeks"]["8"]["board"]
+            self.assertNotEqual(first_ref, second_ref)
+            self.assertEqual(first_path.read_bytes(), first_bytes)
+            self.assertTrue((root / second_ref).is_file())
     def test_invalid_export_does_not_replace_published_manifest(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
             publish_week(2026, 8, sample_board(), None, tmp)

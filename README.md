@@ -102,3 +102,20 @@ python model_v6.py --data training_data_validated.csv --holdout 2025
 ```
 
 Reconstruction remains useful for development, but a trustworthy pregame performance record requires forecasts archived before kickoff along with feature/feed versions. Save weekly exports before games, then evaluate those saved board rows only after the full week has final scores.
+
+## Milestone 3 — historical evaluation (retrospective only)
+
+Run the historical reconstruction from this directory:
+
+```powershell
+python build_training_data.py --seasons 2023 2024 2025 --out-dir evaluation
+python model_v6.py --data evaluation/historical_evaluation_data.csv --validation-season 2024 --test-season 2025 --out-dir evaluation
+```
+
+The validated nflverse seasons are 2023–2025 (18 completed regular-season weeks each). `historical_player_games.csv` contains the full participation-verified set; `historical_evaluation_data.csv` contains rows with a matched V5 prediction and GSIS player ID. Participation requires a positive offensive snap or a positive rushing/receiving TD record. A rushing/receiving TD is independent evidence of participation. Passing TDs do not count as the player's anytime TD. Multiple TDs are retained in `actual_td_count`; `actual_td` is its binary form. Schedule game IDs, teams, opponents, score completion, and duplicates are checked before writing.
+
+Historical V5 features are reconstructed with target-week player statistics cut off at the end of the prior week, complete prior-season information for Week 1, target-week roster snapshots, and prior-game team and opponent results. Injury designations are excluded because the public feed does not preserve when each designation was published. Weekly rosters and other upstream data are current retrospective downloads, not archived pregame vintages; later corrections to earlier-week statistics cannot be ruled out. Therefore these files are explicitly `retrospective_backfill`, not evidence of predictions made before kickoff. Evaluation is conditional on participation and stable player-ID matches; it does not measure how the model handled inactive players in the full pregame player pool.
+
+`evaluation/historical_data_summary.json` documents dataset coverage and limitations. The evaluation script fits the V5-score calibrator and V6 candidates on seasons before each validation/test season; it reports Brier score, log loss, AUC when both labels exist, 10-bin ECE and calibration, ranking top-10/20/30, and season/week/position slices. `td_score` is a ranking score, not a probability. The legacy fixed `td_estimate` curve is retained in the player rows for inspection but excluded from metrics because it was fit using 2025 outcomes. The 2025 retrospective period is not an untouched final test: V5 weights were developed using 2024–25 evidence. Do not use these metrics as verified live forecasting claims or to retune V5 weights.
+
+New JSON snapshots now include a source/model fingerprint, probability-field semantics, UTC prediction time, kickoff, and per-game/per-row snapshot classification. Each run has a unique immutable directory; a collision fails instead of replacing the prior artifact. Since the public upstream feeds do not supply immutable source revisions, metadata says so. No historical performance page was added to the website because no genuine archived pregame evaluation exists; all four existing tabs remain untouched.

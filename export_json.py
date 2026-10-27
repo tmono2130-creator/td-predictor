@@ -24,9 +24,11 @@ Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
 """
 
 import argparse
+import hashlib
 import json
 import os
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -38,8 +40,9 @@ from data_schema import SCHEMA_VERSION, SUPPORTED_WEEKS, validate_board, validat
 
 BOARD_COLUMNS = [
     "player_id", "game_id", "player", "team", "position", "opponent",
-    "td_score", "td_estimate", "games", "injury_status",
-    "game_status", "prediction_timing", "actual_scored_td", "is_home",
+    "td_score", "td_estimate", "predicted_td_probability_pct", "games", "injury_status",
+    "game_status", "prediction_timing", "snapshot_classification", "prediction_timestamp_utc",
+    "actual_scored_td", "is_home",
 ]
 
 
@@ -100,6 +103,7 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
             "home_team": str(row.home_team),
             "kickoff_utc": kickoff.isoformat(timespec="seconds"),
             "prediction_timing": timing,
+            "snapshot_classification": timing,
         })
         for team in (str(row.away_team), str(row.home_team)):
             if team in team_to_game:
@@ -115,23 +119,39 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
         raise ValueError(f"Prediction row team {bad_team!r} is not in the selected week's schedule.")
     timing_by_game = {g["game_id"]: g["prediction_timing"] for g in game_records}
     rows["prediction_timing"] = rows["game_id"].map(timing_by_game)
+    rows["snapshot_classification"] = rows["prediction_timing"]
+    rows["prediction_timestamp_utc"] = generated.isoformat(timespec="seconds")
     validate_predictions_against_schedule(rows, games_df)
 
     cols = [c for c in BOARD_COLUMNS if c in rows.columns]
     rows = rows[cols].copy()
     for c in ("td_score", "td_estimate"):
         rows[c] = pd.to_numeric(rows[c], errors="coerce").round(3)
+    if "td_estimate" in rows.columns:
+        rows["predicted_td_probability_pct"] = rows["td_estimate"]
     if "games" in rows.columns:
         rows["games"] = pd.to_numeric(rows["games"], errors="coerce").fillna(0).astype(int)
     if "actual_scored_td" in rows.columns:
         rows["actual_scored_td"] = rows["actual_scored_td"].fillna(False).astype(bool)
 
     report_available = bool(scored.get("injury_report_available", pd.Series(dtype=bool)).fillna(False).any())
+    model_file = Path(__file__).with_name("td_predictor_v5.py")
+    model_hash = hashlib.sha256(model_file.read_bytes()).hexdigest()
+    fitted_file = Path.cwd() / "model_v6.joblib"
+    if model_in_use == "fitted" and fitted_file.is_file():
+        model_hash = hashlib.sha256(model_hash.encode() + fitted_file.read_bytes()).hexdigest()
+    timing_values = {game["prediction_timing"] for game in game_records}
+    snapshot_classification = next(iter(timing_values)) if len(timing_values) == 1 else "mixed_pregame_and_historical"
     return {
         "meta": {
             "season": int(season), "week": int(week),
             "generated_at": generated.isoformat(timespec="seconds"),
             "model": model_in_use,
+            "model_version": f"{model_in_use}-sha256:{model_hash}",
+            "source_versions": {"nflreadpy": getattr(__import__("nflreadpy"), "__version__", "unknown"),
+                               "upstream_revision": "not provided by the public feed"},
+            "snapshot_classification": snapshot_classification,
+            "probability_semantics": "td_estimate percentage; not established as calibrated probability across seasons",
             "final_games": final_games,
             "games": game_records,
             "injury_report": {
@@ -225,6 +245,8 @@ def publish_week(season, week, board, breakdowns, out_dir):
     board_rel = f"{week_prefix}/board.json"
     breakdowns_rel = f"{week_prefix}/breakdowns.json"
     week_dir = os.path.join(out_dir, str(season), f"week-{week}", run_id)
+    os.makedirs(os.path.dirname(week_dir), exist_ok=True)
+    os.mkdir(week_dir)  # Fail on an ID collision; never overwrite archived snapshots.
     write_json(os.path.join(week_dir, "board.json"), board)
     if breakdowns is not None:
         write_json(os.path.join(week_dir, "breakdowns.json"), breakdowns)

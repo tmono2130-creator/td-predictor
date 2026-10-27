@@ -1,0 +1,79 @@
+{
+  "dataset_classification": "retrospective_backfill",
+  "seasons": [
+    2023,
+    2024,
+    2025
+  ],
+  "eligible_participation_rows_including_unmatched_pfr_ids": 19391,
+  "verified_touchdown_player_games": 3246,
+  "matched_evaluation_rows": 19362,
+  "matched_evaluation_scorers": 3246,
+  "position_scope": [
+    "QB",
+    "RB",
+    "WR",
+    "TE"
+  ],
+  "touchdown_definition": "rushing or receiving TD; passing TD excluded",
+  "participation_rule": "positive offensive snap or positive rushing/receiving TD evidence",
+  "feature_cutoff": "prior target week; prior completed season for week 1",
+  "injury_data": "excluded from historical features because publication timestamps are unavailable",
+  "source": {
+    "nflreadpy": "0.1.5",
+    "upstream_revision": "not provided by the public feed"
+  },
+  "by_season": {
+    "2023": {
+      "eligible_gsis_player_games": 6476,
+      "eligible_touchdown_player_games": 1045,
+      "eligible_player_games_missing_prediction": 0,
+      "prediction_match_coverage": 1.0,
+      "completed_weeks": 18,
+      "completed_games": 272,
+      "pfr_only_player_games_without_gsis_match": 12
+    },
+    "2024": {
+      "eligible_gsis_player_games": 6457,
+      "eligible_touchdown_player_games": 1105,
+      "eligible_player_games_missing_prediction": 0,
+      "prediction_match_coverage": 1.0,
+      "completed_weeks": 18,
+      "completed_games": 272,
+      "pfr_only_player_games_without_gsis_match": 12
+    },
+    "2025": {
+      "eligible_gsis_player_games": 6429,
+      "eligible_touchdown_player_games": 1096,
+      "eligible_player_games_missing_prediction": 0,
+      "prediction_match_coverage": 1.0,
+      "completed_weeks": 18,
+      "completed_games": 272,
+      "pfr_only_player_games_without_gsis_match": 5
+    }
+  },
+  "matched_predictions_by_season": {
+    "2023": {
+      "rows": 6476,
+      "scorers": 1045,
+      "actual_rate": 0.16136504014823966
+    },
+    "2024": {
+      "rows": 6457,
+      "scorers": 1105,
+      "actual_rate": 0.1711321046925817
+    },
+    "2025": {
+      "rows": 6429,
+      "scorers": 1096,
+      "actual_rate": 0.17047752372064084
+    }
+  },
+  "limitations": [
+    "retrospective source vintages and later corrections to prior-week stats are not archived",
+    "V5 weights have 2024-25 development overlap",
+    "prediction coverage is conditional on stable GSIS-ID matches",
+    "evaluation is participation-conditional"
+  ],
+  "model_version": "v5-composite-sha256:52264a60e121ac432a962b2a59e32ac795e4b8ef71552231a57693251e851bdd"
+}
