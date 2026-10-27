@@ -9,6 +9,7 @@ import ParlayTab from "../components/parlay-builder";
 import MarketTab from "../components/market-check";
 import BreakdownTab from "../components/game-breakdown";
 import Overview from "../components/overview";
+import SnapshotFreshness from "../components/snapshot-freshness";
 const TABS: { id: SectionId; label: string; icon: string }[] = [
  { id: "dashboard", label: "Dashboard", icon: "◈" }, { id: "rankings", label: "Player Rankings", icon: "≡" },
  { id: "parlay", label: "Parlay Builder", icon: "⊕" }, { id: "breakdown", label: "Game Breakdown", icon: "▥" }, { id: "market", label: "Market Check", icon: "↗" },
@@ -59,6 +60,7 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
               <span className={`${styles.pill} ${styles.pillAccent}`}>Week {data.meta.week} · {data.meta.season}</span>
               <span className={styles.pill}>Model: {data.meta.model === "fitted" ? "fitted (logistic regression)" : "hand-weighted composite"}</span>
               <span className={styles.pill}>Updated {new Date(data.meta.generated_at).toLocaleString()}</span>
+              <SnapshotFreshness meta={data.meta} />
               <span className={styles.pill}>
                 {data.meta.injury_report.week_available ? "Weekly injury report available" : "Weekly injury report unavailable"}
               </span>
