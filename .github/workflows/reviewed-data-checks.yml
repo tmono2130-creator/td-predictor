@@ -1,0 +1,108 @@
+name: NFL PM reviewed data checks
+
+on:
+  push:
+    branches: [feature/nfl-pm-reviewed-publication]
+    paths:
+      - .github/workflows/reviewed-data-checks.yml
+      - .github/workflows/weekly-predictions.yml
+      - .github/workflows/verify-published-data.yml
+      - automation_publish.py
+      - reviewed_publication.py
+      - verify_publication.py
+      - test_*.py
+      - requirements-automation.txt
+      - td-predictor-web/**
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nfl-pm-pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  NFLREADPY_CACHE: 'off'
+
+jobs:
+  publication-safety:
+    name: Publication safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Validate with trusted base code, never pull_request_target or PR scripts.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Verify current base and data-only contract
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+          base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+          subprocess.run(['git', 'fetch', 'origin', head, 'refs/heads/main:refs/remotes/origin/main'], check=True)
+          current = subprocess.check_output(['git','rev-parse','origin/main'], text=True).strip()
+          base = base or current
+          if base != current:
+              raise SystemExit('Main advanced: update/regenerate the PR; do not reuse stale checks')
+          if Path('reviewed_publication.py').is_file():
+              from reviewed_publication import validate_change
+              print(validate_change(Path.cwd(), base, head, os.environ['HEAD_BRANCH']))
+          else:
+              # Bootstrap only: installing this validator may never introduce data.
+              changed = subprocess.check_output(['git','diff','--name-only',base,head], text=True).splitlines()
+              if any(p.startswith('td-predictor-web/public/data/') for p in changed):
+                  raise SystemExit('Trusted-base validator unavailable for data changes')
+              print('Source-only bootstrap PR; no production data changed')
+          PY
+      - name: Validate existing published JSON and manifest references
+        run: python weekly_pipeline.py validate
+
+  python-tests:
+    name: Python tests
+    needs: publication-safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-automation.txt
+      - run: python -m unittest discover -v
+
+  frontend:
+    name: Frontend publication build
+    needs: publication-safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: td-predictor-web
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: node --experimental-strip-types --test scripts/freshness.test.mjs
+      - run: npm run build
+      - run: git diff --exit-code HEAD -- .

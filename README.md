@@ -182,30 +182,19 @@ A complete target-week schedule and weekly active roster are mandatory. Features
 
 Historical publication is never allowed in the workflow. If a reviewed backfill is approved later, `publish --candidate <path> --allow-historical` still refuses to replace any existing week. No historical backfills have been published in this milestone; Not Generated remains visible for missing weeks.
 
-### GitHub Actions and activation steps
+### Reviewed automated publication — Milestone 5B
 
-`.github/workflows/weekly-predictions.yml` has **only `workflow_dispatch` active**. Scheduled cron examples are comments. A local commit does not activate workflows or publishing; activation requires the separate approval steps below.
+The former direct-main publisher and deploy-hook path have been replaced by
+reviewed, data-only draft PR creation. No production activation is part of this
+change. Publishing defaults false, schedules remain absent, and only a separately
+approved manual main run may propose a PR behind the protected environment.
+Main is never pushed by the publisher. Existing snapshots remain immutable.
 
-1. Review this branch and approve committing/merging the implementation.
-2. Run the workflow on the reviewed branch with **publish=false**. Leave season/week blank for auto-detection, or supply both. The plan is lightweight; generation installs pinned dependencies, runs all Python tests, generates/validates a fresh candidate, and uploads only candidate JSON for 14 days. Live GitHub-hosted execution has not been run yet.
-3. Review the artifact's board, breakdown and receipt. Do not promote expired candidates: kickoff is checked again at publication.
-4. Create GitHub environment **`nfl-pm-production`**, restrict deployment branches to **main**, and require an owner reviewer during initial validation. Branch protection must permit the data bot's normal push; if it rejects the push, stop and use the repository's reviewed process rather than granting force/bypass access.
-5. Configure a Vercel **Deploy Hook for main**. Store its full URL as protected environment secret **`NFL_PM_VERCEL_DEPLOY_HOOK`**. Set repository variable **`NFL_PM_DEPLOYMENT_MODE=deploy_hook`**. Never paste the hook into source, workflow logs or chat. It is a bearer secret.
-6. After explicit approval, set **`NFL_PM_PUBLISHING_ENABLED=true`**. A manual main run also needs **publish=true**, and must pass the protected environment. A feature-branch run cannot publish. The publication job alone has `contents: write`; checkout does not persist credentials. The token is scoped to the publication step, and staging is limited to the one new JSON bundle plus the manifest.
-7. Verify a manual main publication end to end: normal data-only commit, Vercel deployment **READY**, production manifest references and generated timestamp match, all referenced files return HTTP 200, then browser smoke checks. A hook acceptance response is only a trigger acknowledgment.
-8. Only after that test and your approval, uncomment the proposed `schedule` events. The same repository opt-in, main check and environment gate apply. Keep reviewers if desired; remove recurring manual review only after a separate approval for unattended publishing.
-
-The workflow refuses publication if main moved after checkout; it never merges/rebases unrelated changes and never force-pushes. It stages exactly the new three JSON files and manifest. Jobs are serialized with `cancel-in-progress: false`.
-
-**Disable automation:** set `NFL_PM_PUBLISHING_ENABLED=false` immediately to block publication, then remove/comment schedule triggers or disable the workflow in GitHub Actions. Existing static data continues to serve. Dry-run generation does not carry production secrets or write permissions.
-
-### Vercel deployment behavior and verification status
-
-GitHub documents that `GITHUB_TOKEN` pushes do not start additional GitHub Actions workflows ([token behavior](https://docs.github.com/en/actions/concepts/security/github_token)). This does not by itself prove that a third-party Vercel Git integration will or will not deploy the bot commit. Plan/account/author/project rules must be verified for this repository. Do **not** assume a data commit updates production automatically.
-
-A main-branch [Vercel Deploy Hook](https://vercel.com/docs/deploy-hooks) is the supported explicit trigger implemented here; it is called only after a successful data push, using the protected environment secret without printing its URL. A failed trigger reports failure and leaves the committed data intact for a manual deployment. The alternative **`NFL_PM_DEPLOYMENT_MODE=verified_git`** is allowed only after independently proving that the actual repository token's data push produces a READY production deployment. No personal access token is hardcoded or requested.
-
-Production's existing manifest and Week 8 board were read successfully during the audit. Vercel project-level inspection returned a team-scope 403; no bot-triggered deployment or hook has been executed. **Automated deployment is not verified or enabled.** See [Vercel GitHub integration](https://vercel.com/docs/git/vercel-for-github) for project settings. No deploy hook was created or secret configured by this work.
+See [the reviewed publication runbook](docs/reviewed-publication.md) for the
+trusted-base PR checks, freshness/kickoff rules, GitHub permissions/protections,
+opt-in exact-commit Vercel verification, supervised first-publication checklist,
+and tested manifest-only rollback procedure. Deployment verification is read-only
+and separately disabled by default; no deployment hook is used.
 
 ### Freshness and troubleshooting
 
@@ -215,7 +204,7 @@ The existing dark dashboard is preserved. Small metadata indicators show recorde
 - **Coverage/identifier error:** resolve upstream roster/game IDs or missing completed-game data; do not lower the coverage threshold to publish a partial batch.
 - **Kickoff passed:** regenerate; never relabel a post-kickoff run as authentic pregame.
 - **Manifest/main changed:** generate a fresh candidate on the current reviewed main; no auto-merge or overwrite is attempted.
-- **Vercel trigger failure:** inspect whether the data commit exists, then trigger/verify the main deployment manually. Do not print the secret hook URL.
+- **PR/deployment verification failure:** inspect review branches, Git main and Vercel independently; follow the reviewed rollback runbook. Never assume a push means production is updated.
 - **Turbopack worker cache error locally:** stop the local server and perform a fresh build with a fresh ignored `.next` cache; do not change model data or disable validation.
 
 Checks:
