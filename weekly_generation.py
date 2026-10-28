@@ -22,7 +22,7 @@ def redzone_opportunities(pbp):
 
 
 def score_v5(roster, histories, pbp, injuries, plan):
-    season, week = plan["season"], plan["week"]
+    season = plan["season"]
     prior = histories[season - 1].copy()
     prior["model_source_weight"] = 0.65
     current = histories.get(season, pd.DataFrame()).copy()
@@ -80,7 +80,8 @@ def generate_candidate(plan, schedule_records, sources, destination, data_root, 
         raise ValueError("No scheduled games eligible for generation")
     base_manifest_hash = digest(Path(data_root) / "manifest.json")
     source_cutoff = clock()
-    roster = sources.rosters(plan["season"], plan["week"], plan["historical"])
+    scheduled_teams = {g[t] for g in plan['games'] for t in ('home_team', 'away_team')}
+    roster = sources.rosters(plan["season"], plan["week"], plan["historical"], teams=scheduled_teams)
     histories, pbp = sources.history(schedule_records, plan["season"], plan["week"], source_cutoff)
     injuries = sources.injuries(plan["season"], plan["week"], clock(), plan["historical"])
     scored = score_v5(roster, histories, pbp, injuries, plan)

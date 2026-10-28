@@ -6,7 +6,8 @@ import sys
 import uuid
 from pathlib import Path
 from weekly_schedule import plan_week, refresh_due, retrieve_schedule, utc_now
-from weekly_storage import DEFAULT_DATA, final_forecasts, load_json, publish_candidate, validate_candidate, validate_manifest, write_new
+from weekly_storage import DEFAULT_DATA, final_forecasts, publish_candidate, validate_candidate, validate_manifest, write_new
+from publication_policy import require_review_checkout
 
 
 def verify_current_schedule(board, records, now=None):
@@ -54,6 +55,7 @@ def main(argv=None):
         print(json.dumps(final_forecasts(args.data), indent=2))
         return 0
     if args.command == "publish":
+        require_review_checkout(args.data, historical=args.allow_historical)
         board, _, _ = validate_candidate(args.candidate, allow_historical=args.allow_historical)
         verify_current_schedule(board, retrieve_schedule())
         relative = publish_candidate(args.candidate, args.data, allow_historical=args.allow_historical)

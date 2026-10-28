@@ -1,5 +1,5 @@
 """
-EXPORT JSON — runs your Python model and writes the JSON files the website reads.
+EXPORT JSON — compatibility-only, unreviewed local previews.
 
 Why this exists: the model (nflreadpy, pandas, the fitted .joblib) can only run
 in Python. The website is Next.js/Node. Instead of hosting a heavy Python
@@ -10,14 +10,13 @@ and writes versioned static files plus a manifest that the site reads:
     {season}/week-{week}/{run-id}/board.json
     {season}/week-{week}/{run-id}/breakdowns.json (unless --skip-breakdowns)
 
-The website needs no Python at all after this. Re-run it whenever you want the
-site refreshed -- after injury reports update, after a week's games finish, and
-after retraining the model (train_final_model.py).
+Live data directories are forbidden. The supported production path is the
+reviewed weekly pipeline and a data-only PR; never deploy this preview output.
 
 USAGE:
-    python export_json.py --season 2026 --week 6 --out ../my-site/public/data
-    python export_json.py --season 2026 --out ../my-site/public/data     # week auto-detected
-    python export_json.py --season 2026 --week 6 --skip-breakdowns       # board only (fast)
+    python export_json.py --season 2026 --week 6 --out work/local-preview
+    python export_json.py --season 2026 --out work/local-preview   # week auto-detected
+    python export_json.py --season 2026 --week 6 --skip-breakdowns --out work/local-preview
 
 Run it from the folder that contains td_predictor_v5.py and model_v6.joblib
 (the model file is looked up relative to where you run it).
@@ -37,6 +36,8 @@ from td_predictor_v5 import get_predictions, get_final_scores, load_schedule, sc
 from evaluation_utils import regular_week_games, validate_predictions_against_schedule
 from game_breakdown import load_breakdown_context, build_game_from_context, list_week_games
 from data_schema import SCHEMA_VERSION, SUPPORTED_WEEKS, validate_board, validate_breakdowns
+from outcome_semantics import forecast_outcomes
+from publication_policy import is_live_path
 
 BOARD_COLUMNS = [
     "player_id", "game_id", "player", "team", "position", "opponent",
@@ -55,6 +56,7 @@ def df_records(df):
 
 def write_json(path, payload):
     """Write atomically so the site never serves a half-written file."""
+    assert_local_export_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -81,7 +83,12 @@ def detect_current_week(season):
     return int(upcoming["week"].min())
 
 
-def board_payload(scored, season, week, model_in_use, final_games, schedule):
+def assert_local_export_path(path):
+    if is_live_path(path):
+        raise ValueError('Live JSON updates require the reviewed weekly publication pipeline; use a separate local preview directory')
+
+
+def board_payload(scored, season, week, model_in_use, final_games, schedule, verified_outcomes=None):
     games_df = regular_week_games(schedule, season, week)
     if games_df is None or games_df.empty:
         raise ValueError(f"No regular-season games found for {season} week {week}.")
@@ -89,6 +96,7 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
     generated = datetime.now(timezone.utc)
     game_records = []
     team_to_game = {}
+    final_game_ids = set()
     for row in games_df.itertuples(index=False):
         game_id = str(getattr(row, "game_id", "") or "").strip()
         if not game_id:
@@ -97,6 +105,8 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
         if kickoff is None:
             raise ValueError(f"Schedule game {game_id} has no valid date and kickoff time.")
         timing = "pregame_snapshot" if generated < kickoff else "historical_backfill"
+        if kickoff <= generated and all(pd.notna(getattr(row, field, None)) for field in ('home_score','away_score')):
+            final_game_ids.add(game_id)
         game_records.append({
             "game_id": game_id,
             "away_team": str(row.away_team),
@@ -122,6 +132,12 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
     rows["snapshot_classification"] = rows["prediction_timing"]
     rows["prediction_timestamp_utc"] = generated.isoformat(timespec="seconds")
     validate_predictions_against_schedule(rows, games_df)
+    evidence = verified_outcomes
+    if evidence is not None and not evidence.empty:
+        if 'game_id' not in evidence:
+            raise ValueError('Outcome evidence lacks game identity')
+        evidence = evidence[evidence.game_id.isin(final_game_ids)]
+    rows['actual_scored_td'] = forecast_outcomes(rows, evidence)
 
     cols = [c for c in BOARD_COLUMNS if c in rows.columns]
     rows = rows[cols].copy()
@@ -131,8 +147,6 @@ def board_payload(scored, season, week, model_in_use, final_games, schedule):
         rows["predicted_td_probability_pct"] = rows["td_estimate"]
     if "games" in rows.columns:
         rows["games"] = pd.to_numeric(rows["games"], errors="coerce").fillna(0).astype(int)
-    if "actual_scored_td" in rows.columns:
-        rows["actual_scored_td"] = rows["actual_scored_td"].fillna(False).astype(bool)
 
     report_available = bool(scored.get("injury_report_available", pd.Series(dtype=bool)).fillna(False).any())
     model_file = Path(__file__).with_name("td_predictor_v5.py")
@@ -178,6 +192,7 @@ def breakdown_payload(result):
 
 
 def export_board(season, week, out_dir):
+    assert_local_export_path(out_dir)
     print(f"\n[board] {season} week {week}")
     messages = []
     scored, _ = get_predictions(season, week, status_callback=messages.append)
@@ -193,6 +208,7 @@ def export_board(season, week, out_dir):
 
 
 def export_breakdowns(season, week, lookback, out_dir):
+    assert_local_export_path(out_dir)
     print(f"\n[breakdowns] {season} week {week}, last {lookback} games per team")
     games = list_week_games(season, week)
     if not games:
@@ -217,7 +233,8 @@ def export_breakdowns(season, week, lookback, out_dir):
 
 
 def publish_week(season, week, board, breakdowns, out_dir):
-    """Write versioned weekly artifacts, then atomically publish the manifest pointer."""
+    """Compatibility-only local preview export; cannot update live data roots."""
+    assert_local_export_path(out_dir)
     validate_board(board, season, week)
     if breakdowns is not None:
         validate_breakdowns(breakdowns, season, week, board.get("meta", {}).get("games"))
@@ -268,10 +285,14 @@ def main():
     ap = argparse.ArgumentParser(description="Export validated model output for the website.")
     ap.add_argument("--season", type=int, required=True)
     ap.add_argument("--week", type=int, default=None, help="Omit to auto-detect the current regular-season week.")
-    ap.add_argument("--out", type=str, default="./public/data", help="Folder the site serves data from.")
+    ap.add_argument("--out", type=str, required=True, help="Explicit local preview directory; live data roots are forbidden.")
     ap.add_argument("--lookback", type=int, default=6, help="Games of history per team for breakdowns.")
     ap.add_argument("--skip-breakdowns", action="store_true", help="Board only (much faster).")
     a = ap.parse_args()
+    try:
+        assert_local_export_path(a.out)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     if a.season < 1999:
         ap.error("--season must be 1999 or later")
@@ -285,7 +306,7 @@ def main():
     validate_board(board, a.season, week)
     breakdowns = None if a.skip_breakdowns else export_breakdowns(a.season, week, a.lookback, a.out)
     publish_week(a.season, week, board, breakdowns, a.out)
-    print("\nDone. Deploy/refresh the site to publish the new data.")
+    print("\nLocal preview only. Live updates require a reviewed weekly data PR.")
 
 if __name__ == "__main__":
     main()

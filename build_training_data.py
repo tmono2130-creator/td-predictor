@@ -81,7 +81,7 @@ def reconstruct(seasons, out_dir):
                 predicted = predicted.copy()
                 predicted["player_id"] = predicted.player_id.astype(str)
                 predicted["game_id"] = predicted.game_id.astype(str)
-                eligible = outcomes[outcomes.player_id_namespace.eq("gsis")].copy()
+                eligible = outcomes[outcomes.player_id_namespace.eq("gsis") & outcomes.actual_td.notna()].copy()
                 joined = predicted.merge(
                     eligible, on=["player_id", "game_id"], how="inner",
                     validate="one_to_one", suffixes=("", "_outcome"),
@@ -123,7 +123,7 @@ def reconstruct(seasons, out_dir):
         raise RuntimeError("Duplicate prediction player/game rows.")
     outcomes.to_csv(out_dir / "historical_player_games.csv", index=False)
     predictions.to_csv(out_dir / "historical_evaluation_data.csv", index=False)
-    gsis_outcomes = outcomes[outcomes.player_id_namespace.eq("gsis")]
+    gsis_outcomes = outcomes[outcomes.player_id_namespace.eq("gsis") & outcomes.actual_td.notna()]
     outcome_by_season = {}
     prediction_by_season = {}
     for season in sorted(outcomes.season.unique().tolist()):
@@ -144,6 +144,7 @@ def reconstruct(seasons, out_dir):
         "dataset_classification": "retrospective_backfill",
         "seasons": sorted(int(s) for s in outcomes.season.unique()),
         "eligible_participation_rows_including_unmatched_pfr_ids": int(len(outcomes)),
+        "unknown_outcome_rows_excluded_from_evaluation": int(outcomes.actual_td.isna().sum()),
         "verified_touchdown_player_games": int(outcomes.actual_td.sum()),
         "matched_evaluation_rows": int(len(predictions)),
         "matched_evaluation_scorers": int(predictions.actual_td.sum()),
