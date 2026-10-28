@@ -1,89 +1,121 @@
-"""CI-only allowlisted data commit/push, with a race check and no history rewriting.
-
-Do not invoke locally during implementation. workflow_dispatch's publish flag,
-repository variable, protected branch, and production environment all gate this.
-"""
-import os
+"""CI-only creation of a reviewed data PR. Never push to main or deploy."""
 import base64
+import json
+import os
 import re
 import subprocess
-import sys
 from pathlib import Path
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener
+from verify_publication import NoRedirect
+from reviewed_publication import MANIFEST, PREFIX, fresh, revision, validate_change
 from weekly_pipeline import verify_current_schedule
-from weekly_schedule import retrieve_schedule
+from weekly_schedule import retrieve_schedule, utc_now
 from weekly_storage import DEFAULT_DATA, publish_candidate, validate_candidate
 
 
 def git(*args):
     env = os.environ.copy()
-    token = env.pop("GH_PUSH_TOKEN", None)
+    token = env.pop('GH_PUSH_TOKEN', None)
     if token:
-        env["GIT_CONFIG_COUNT"] = "1"
-        env["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
-        env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic " + base64.b64encode(("x-access-token:" + token).encode()).decode()
-    return subprocess.check_output(["git", *args], text=True, env=env).strip()
+        env['GIT_CONFIG_COUNT'] = '1'
+        env['GIT_CONFIG_KEY_0'] = 'http.https://github.com/.extraheader'
+        env['GIT_CONFIG_VALUE_0'] = 'AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode()
+    return subprocess.check_output(['git', *args], text=True, env=env).strip()
 
 
 def publication_allowed(event, ref, enabled, requested):
-    return ref == "refs/heads/main" and enabled == "true" and (event == "schedule" or event == "workflow_dispatch" and requested == "true")
+    return event == 'workflow_dispatch' and ref == 'refs/heads/main' and enabled == 'true' and requested == 'true'
 
 
-def commit_data(candidate, expected_head, root=DEFAULT_DATA):
-    if not re.fullmatch(r"[0-9a-f]{40}", expected_head):
-        raise ValueError("Expected source revision is required")
-    if git("rev-parse", "HEAD") != expected_head or git("status", "--porcelain", "--untracked-files=no"):
-        raise ValueError("Checkout is not the clean reviewed source revision")
-    remote_head = git("ls-remote", "origin", "refs/heads/main").split()[0]
-    if remote_head != expected_head:
-        raise ValueError("Main moved during generation; do not merge/rebase automatically")
-    repo = Path(git("rev-parse", "--show-toplevel")).resolve()
-    if Path(root).resolve() != repo / "td-predictor-web" / "public" / "data":
-        raise ValueError("Publication root must be the frontend JSON directory")
-    board, _, _ = validate_candidate(candidate)
-    verify_current_schedule(board, retrieve_schedule())
-    directory = publish_candidate(candidate, root)
-    prefix = "td-predictor-web/public/data/"
-    allowed = {prefix + "manifest.json"} | {prefix + directory + "/" + name for name in ("board.json", "breakdowns.json", "receipt.json")}
-    git("add", "--", *sorted(allowed))
-    if set(git("diff", "--cached", "--name-only").splitlines()) != allowed:
-        raise ValueError("Staged changes do not match the data-only allowlist")
-    git("diff", "--cached", "--check")
-    git("-c", "user.name=NFL PM data bot", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
-        "commit", "-m", f"Refresh NFL PM {board['meta']['season']} week {board['meta']['week']} forecasts")
-    # Normal push fails on a concurrent remote update; never force, pull, or rebase.
-    git("push", "origin", "HEAD:refs/heads/main")
-    return git("rev-parse", "HEAD")
-
-
-def validate_hook_url(url):
-    parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != "api.vercel.com" or not parsed.path.startswith("/v1/integrations/deploy/"):
-        raise ValueError("Expected a Vercel deploy hook URL")
-    return url
-
-
-def trigger_deploy_hook(url):
-    validate_hook_url(url)
-    # Treat the entire URL as a secret: no printing, shell expansion, or HTTP error URLs.
+def github(path, payload=None):
+    repo = os.environ.get('GITHUB_REPOSITORY', '')
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+        raise ValueError('Invalid GitHub repository')
+    request = Request('https://api.github.com/repos/' + repo + path,
+                      data=None if payload is None else json.dumps(payload).encode(),
+                      headers={'Authorization': 'Bearer ' + os.environ['GH_PUSH_TOKEN'],
+                               'Accept': 'application/vnd.github+json', 'User-Agent': 'NFL-PM-reviewed-publication'})
     try:
-        with urlopen(Request(url, data=b"", method="POST"), timeout=45) as response:
-            if response.status not in (200, 201, 202):
-                raise RuntimeError("Deploy hook rejected")
+        with build_opener(NoRedirect).open(request, timeout=30) as response:
+            return json.load(response)
     except Exception:
-        raise RuntimeError("Vercel deploy hook failed; data commit remains available for a manual deployment") from None
+        raise RuntimeError('GitHub publication request failed; inspect PRs/branches before retrying') from None
+
+
+def assert_no_pending():
+    for page in range(1, 11):
+        pulls = github(f'/pulls?state=open&base=main&per_page=100&page={page}')
+        if any(p['head']['ref'].startswith(('nfl-pm/publication/', 'nfl-pm/rollback/')) for p in pulls):
+            raise ValueError('Concurrent publication/rollback PR exists')
+        if len(pulls) < 100:
+            return
+    raise ValueError('Cannot safely establish publication exclusivity')
+
+
+def assert_main(expected):
+    if git('ls-remote', 'origin', 'refs/heads/main').split()[0] != expected:
+        raise ValueError('Main moved during generation; regenerate, never rebase automatically')
+
+
+def create_data_pr(candidate, expected_head, run_id, attempt, root=DEFAULT_DATA):
+    revision(expected_head)
+    if not re.fullmatch(r'[0-9]+', run_id) or not re.fullmatch(r'[0-9]+', attempt):
+        raise ValueError('Numeric GitHub run and attempt identifiers required')
+    branch = f'nfl-pm/publication/{run_id}-{attempt}'
+    if git('rev-parse', 'HEAD') != expected_head or git('status', '--porcelain'):
+        raise ValueError('Checkout is not the clean reviewed main revision')
+    repo = Path(git('rev-parse', '--show-toplevel')).resolve()
+    if Path(root).resolve() != repo / PREFIX.rstrip('/'):
+        raise ValueError('Publication root must be frontend JSON directory')
+    assert_main(expected_head); assert_no_pending()
+    if git('ls-remote', 'origin', 'refs/heads/nfl-pm/publication/*'):
+        raise ValueError('Publication branch exists; inspect its PR outcome before cleanup')
+    board, _, receipt = validate_candidate(candidate)
+    fresh(board, receipt, utc_now())
+    records = retrieve_schedule()
+    verify_current_schedule(board, records)
+    git('switch', '-c', branch)
+    directory = publish_candidate(candidate, root)
+    allowed = {MANIFEST} | {PREFIX + directory + '/' + n for n in ('board.json', 'breakdowns.json', 'receipt.json')}
+    changed = set(git('diff', '--name-only').splitlines()) | set(git('ls-files', '--others', '--exclude-standard').splitlines())
+    if changed != allowed:
+        raise ValueError('Unexpected working-tree changes; no review branch push permitted')
+    git('add', '--', *sorted(allowed))
+    if set(git('diff', '--cached', '--name-only').splitlines()) != allowed:
+        raise ValueError('Staged changes do not match data-only allowlist')
+    git('diff', '--cached', '--check')
+    git('-c', 'user.name=NFL PM data bot', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+        'commit', '-m', f"Propose NFL PM {board['meta']['season']} week {board['meta']['week']} forecasts")
+    proposed = git('rev-parse', 'HEAD')
+    if git('status', '--porcelain'):
+        raise ValueError('Unexpected changes remain after data commit')
+    summary = validate_change(repo, expected_head, proposed, branch)
+    assert_main(expected_head); assert_no_pending()
+    # Normal push to a unique review branch only. Never main or a forced update.
+    git('push', 'origin', f'HEAD:refs/heads/{branch}')
+    assert_main(expected_head)
+    pull = github('/pulls', {'base': 'main', 'head': branch, 'draft': True,
+        'title': f"Review NFL PM {summary['season']} week {summary['week']} predictions",
+        'body': f"Data-only candidate. Base: {expected_head}; head: {proposed}.\n\n"
+                f"Players: {summary['players']}; games: {summary['games']}. "
+                f"Manifest SHA256: {summary['manifest_sha256']}.\n\n"
+                'No automatic merge. Approve required workflows if GitHub requests it. Rerun all checks '
+                'immediately before merge; reject stale candidates. Record the current deployment and '
+                'manifest for rollback. A human-approved merge uses existing Git-to-Vercel integration; '
+                'verify the exact deployed commit, JSON hashes, and website afterward.'})
+    return pull['html_url']
 
 
 def main():
-    if not publication_allowed(os.environ.get("GITHUB_EVENT_NAME"), os.environ.get("GITHUB_REF"),
-                               os.environ.get("NFL_PM_PUBLISHING_ENABLED"), os.environ.get("PUBLISH_REQUESTED")):
-        raise SystemExit("Publication is disabled or this run is not approved main")
-    sha = commit_data(Path("work/candidate"), os.environ.get("GITHUB_SHA", ""))
-    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        stream.write("published_sha=" + sha + "\n")
-    print("Published validated data commit " + sha)
+    if not publication_allowed(os.environ.get('GITHUB_EVENT_NAME'), os.environ.get('GITHUB_REF'),
+                               os.environ.get('NFL_PM_PUBLISHING_ENABLED'), os.environ.get('PUBLISH_REQUESTED')):
+        raise SystemExit('Reviewed PR creation is disabled or this run is not approved main')
+    url = create_data_pr(Path(os.environ['CANDIDATE_DIR']), os.environ['GITHUB_SHA'],
+                         os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'])
+    print('Created draft data PR: ' + url)
+    with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+        stream.write('Draft data PR: ' + url + '\nNo merge or deployment was requested.\n')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

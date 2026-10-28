@@ -14,7 +14,7 @@ from weekly_storage import digest, write_new, publish_candidate, validate_candid
 from weekly_sources import FreshSources, prior_rows, STAT_COLUMNS, PBP_REQUIRED
 from weekly_generation import generate_candidate, score_v5
 from weekly_pipeline import verify_current_schedule
-from automation_publish import publication_allowed, validate_hook_url, trigger_deploy_hook, commit_data
+from automation_publish import publication_allowed
 
 NOW = utc('2026-09-09T12:00:00+00:00')
 
@@ -286,37 +286,12 @@ class GenerationTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_publication_opt_in_and_main_required(self):
+    def test_publication_opt_in_is_manual_main_only(self):
         self.assertFalse(publication_allowed('workflow_dispatch','refs/heads/main','true','false'))
-        self.assertFalse(publication_allowed('schedule','refs/heads/test','true','true'))
-        self.assertFalse(publication_allowed('schedule','refs/heads/main','false','true'))
+        self.assertFalse(publication_allowed('schedule','refs/heads/main','true','true'))
+        self.assertFalse(publication_allowed('workflow_dispatch','refs/heads/main','false','true'))
+        self.assertFalse(publication_allowed('workflow_dispatch','refs/heads/feature','true','true'))
         self.assertTrue(publication_allowed('workflow_dispatch','refs/heads/main','true','true'))
-    def test_hooks_validate_host_and_do_not_leak_secret(self):
-        with self.assertRaises(ValueError):validate_hook_url('https://evil.example/secret')
-        with patch('automation_publish.urlopen',side_effect=OSError('secret-url')):
-            with self.assertRaisesRegex(RuntimeError,'Vercel deploy hook failed') as error:
-                trigger_deploy_hook('https://api.vercel.com/v1/integrations/deploy/fixture-secret')
-            self.assertNotIn('fixture-secret',str(error.exception))
-    def test_main_race_never_commits_or_merges(self):
-        with patch('automation_publish.git',side_effect=['a'*40,'','b'*40]) as run:
-            with self.assertRaisesRegex(ValueError,'Main moved'):commit_data('fixture','a'*40)
-            self.assertFalse(any('commit' in call.args or 'push' in call.args for call in run.call_args_list))
-    def test_ci_stages_only_new_bundle_and_manifest(self):
-        root=Path.cwd()/'td-predictor-web'/'public'/'data';directory='2026/week-1/test-run'
-        allowed={'td-predictor-web/public/data/manifest.json'} | {'td-predictor-web/public/data/'+directory+'/'+name for name in ('board.json','breakdowns.json','receipt.json')}
-        def fake_git(*args):
-            if args==('rev-parse','HEAD'):return 'a'*40
-            if args[:1]==('status',):return ''
-            if args[:1]==('ls-remote',):return 'a'*40+' refs/heads/main'
-            if args==('rev-parse','--show-toplevel'):return str(Path.cwd())
-            if args==('diff','--cached','--name-only'):return '\n'.join(sorted(allowed))
-            return ''
-        with patch('automation_publish.git',side_effect=fake_git) as run, patch('automation_publish.validate_candidate',return_value=({'meta':{'season':2026,'week':1}},None,None)), patch('automation_publish.verify_current_schedule'), patch('automation_publish.retrieve_schedule',return_value=[]), patch('automation_publish.publish_candidate',return_value=directory):
-            commit_data('fixture','a'*40,root)
-            staged=next(c.args for c in run.call_args_list if c.args[0]=='add')
-            self.assertEqual(set(staged[2:]),allowed)
-            self.assertIn(('push','origin','HEAD:refs/heads/main'),[c.args for c in run.call_args_list])
-            self.assertFalse(any('--force' in c.args or 'merge' in c.args or 'rebase' in c.args for c in run.call_args_list))
 
     def test_yaml_is_dormant_and_permissions_scoped(self):
         import yaml
@@ -324,8 +299,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(set(workflow['on']),{'workflow_dispatch'})
         self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['publish']['default'],'false')
         self.assertEqual(workflow['permissions'],{'contents':'read'})
-        self.assertEqual(workflow['jobs']['publish']['permissions'],{'contents':'write'})
-        self.assertEqual(workflow['jobs']['publish']['environment'],'nfl-pm-production')
+        job=workflow['jobs']['publish']
+        self.assertEqual(job['permissions'],{'contents':'write','pull-requests':'write'})
+        self.assertEqual(job['environment'],'nfl-pm-production')
+        self.assertNotIn('schedule', job['if'])
         for job in workflow['jobs'].values():
             for step in job['steps']:
                 if 'uses' in step:
@@ -333,7 +310,9 @@ class WorkflowTests(unittest.TestCase):
                 if step.get('uses','').startswith('actions/checkout@'):
                     self.assertEqual(step['with']['persist-credentials'],'false')
         text=Path('automation_publish.py').read_text(encoding='utf-8-sig')
-        self.assertNotIn('"--force"',text);self.assertIn('td-predictor-web/public/data/',text)
+        self.assertNotIn('HEAD:refs/heads/main',text)
+        self.assertNotIn('deploy_hook',text)
+        self.assertIn("'draft': True",text)
 
 
 if __name__=='__main__':unittest.main()
