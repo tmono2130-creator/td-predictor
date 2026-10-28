@@ -1,12 +1,12 @@
 @import "tailwindcss";
-:root { color-scheme: dark; --background: #090e17; --foreground: #e6edf7; }
-@theme inline { --color-background: var(--background); --color-foreground: var(--foreground); --font-sans: var(--font-geist-sans); --font-mono: var(--font-geist-mono); }
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--background); color: var(--foreground); font-family: Arial, Helvetica, sans-serif; }
-button, input, select { font: inherit; }
-button, select, summary { cursor: pointer; }
-button { color: inherit; }
-a { color: inherit; }
-button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #58e1af; outline-offset: 4px; }
-button:disabled { opacity: .5; cursor: not-allowed; }
-::selection { background: #25795c; color: #fff; }
+:root { color-scheme: light; --background:#d7dce2; --foreground:#202832; }
+@theme inline { --color-background:var(--background); --color-foreground:var(--foreground); --font-sans:Arial,Helvetica,sans-serif; --font-mono:"Courier New",monospace; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--background); color:var(--foreground); font-family:Arial,Helvetica,sans-serif; font-size:12px; }
+button,input,select { font:inherit; }
+button,select,summary { cursor:pointer; }
+button { color:inherit; }
+a { color:#164c84; }
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible { outline:2px solid #b71928; outline-offset:2px; }
+button:disabled { opacity:.6; cursor:not-allowed; }
+::selection { background:#173e68; color:#fff; }
