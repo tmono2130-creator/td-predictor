@@ -6,11 +6,11 @@ import json
 import re
 import subprocess
 import tempfile
-from datetime import timedelta
 from pathlib import Path
 from weekly_pipeline import verify_current_schedule
-from weekly_schedule import kickoff, retrieve_schedule, utc, utc_now
+from weekly_schedule import retrieve_schedule, utc, utc_now
 from weekly_storage import validate_candidate, validate_manifest
+from publication_policy import fresh as fresh
 
 PREFIX = 'td-predictor-web/public/data/'
 MANIFEST = PREFIX + 'manifest.json'
@@ -44,19 +44,6 @@ def tree(repo, sha):
             raise ValueError('Oversized JSON data file')
         result[name] = git(repo, 'cat-file', 'blob', oid)
     return result
-
-
-def fresh(board, receipt, now):
-    now = utc(now)
-    remaining = min(kickoff(g) for g in board['meta']['games']) - now
-    if remaining <= timedelta(minutes=10):
-        raise ValueError('Kickoff safety margin exhausted')
-    limit = (timedelta(minutes=30) if remaining <= timedelta(hours=6) else
-             timedelta(hours=6) if remaining <= timedelta(hours=48) else timedelta(hours=24))
-    for timestamp in (board['meta']['generated_at'], receipt['source_cutoff_utc']):
-        age = now - utc(timestamp)
-        if age < timedelta(0) or age >= limit:
-            raise ValueError('Stale predictions or source cutoff; regenerate')
 
 
 def materialize(files, root):

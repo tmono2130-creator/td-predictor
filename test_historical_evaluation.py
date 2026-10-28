@@ -3,7 +3,6 @@ import unittest
 import pandas as pd
 
 from model_v6 import _probability_metrics, _prior_rate_baselines, validate_evaluation_data
-from evaluation_utils import require_complete_regular_week
 from historical_data import build_actual_player_games
 
 
@@ -69,15 +68,18 @@ class HistoricalOutcomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate player/game"):
             self.build(stats=stats)
 
-    def test_name_matched_pfr_participant_keeps_known_td_outcome(self):
+    def test_names_never_transfer_outcomes_between_unresolved_identities(self):
         _, stats, snaps, _ = fixtures()
         stats = pd.concat([stats, stats.iloc[[0]].assign(player_id="gs-rb-alt", rushing_tds=0,
                                                         receiving_tds=0)], ignore_index=True)
         rows = self.build(stats=stats, crosswalk=pd.DataFrame(columns=["pfr_id", "gsis_id"]))
         pfr_row = rows[rows.player_id.eq("pfr:p-rb")].iloc[0]
-        self.assertEqual(pfr_row.actual_td, 1)
-        self.assertEqual(pfr_row.actual_td_count, 3)
-        self.assertEqual(pfr_row.participation_source, "offensive_snap+offensive_td_stat")
+        self.assertTrue(pd.isna(pfr_row.actual_td))
+        self.assertTrue(pd.isna(pfr_row.actual_td_count))
+        self.assertFalse(pfr_row.outcome_verified)
+        scorer=rows[rows.player_id.eq('gs-rb')].iloc[0]
+        self.assertEqual(scorer.actual_td_count,3)
+        self.assertEqual(scorer.participation_source,'offensive_td_stat')
     def test_mismatched_team_is_rejected(self):
         _, _, snaps, _ = fixtures()
         snaps.loc[0, "team"] = "MIA"

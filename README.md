@@ -1,11 +1,12 @@
 # NFL Touchdown Prediction Project
 
-This repository keeps the existing Python predictor and static JSON website workflow. `td_predictor_v5.py` remains the production prediction entry point; `export_json.py` runs it and publishes validated weekly data under `td-predictor-web/public/data`.
+This repository keeps the existing Python predictor and static JSON website workflow. The reviewed weekly pipeline uses unchanged V5 scoring functions and proposes data-only PRs. `export_json.py` is restricted to unreviewed local previews and cannot write live JSON paths.
 
 ## Current project map
 
 - `td_predictor_v5.py` — V5 composite model, with optional fitted-model loading when a locally trained `model_v6.joblib` exists.
-- `export_json.py` — runs the V5 model and writes weekly board/breakdown JSON plus the data manifest.
+- `export_json.py` — compatibility-only local previews; cannot update live data directories.
+- `roster_eligibility.py`, `outcome_semantics.py`, `publication_policy.py` — shared publication safety and evidence policies.
 - `game_breakdown.py` — builds matchup and usage breakdowns from schedule and play-by-play data.
 - `data_schema.py` — Python validation for the public JSON contract.
 - `test_data_pipeline.py` — lightweight standard-library tests for validation and weekly publishing.
@@ -35,13 +36,13 @@ From the repository root in PowerShell:
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python export_json.py --season 2026 --week 8 --out .\td-predictor-web\public\data
+python export_json.py --season 2026 --week 8 --out .\work\local-preview
 ```
 
-Repeat the export for each week you want to publish. The site keeps prior weeks in their own folders. To skip matchup breakdowns:
+These commands produce local previews only; do not deploy or copy them into live data. Use reviewed data PRs for live updates. To skip matchup breakdowns in a preview:
 
 ```powershell
-python export_json.py --season 2026 --week 8 --skip-breakdowns --out .\td-predictor-web\public\data
+python export_json.py --season 2026 --week 8 --skip-breakdowns --out .\work\local-preview
 ```
 
 Start the website from its folder:
@@ -141,13 +142,13 @@ python weekly_pipeline.py index --data td-predictor-web/public/data
 
 Generation **does not publish**. Its default destination is a new `work/weekly-candidates/<UTC-run-id>` directory. An explicitly supplied candidate directory must not already exist; regeneration uses a fresh directory rather than overwriting an earlier forecast. Both board and breakdown must succeed. No fitted V6 artifact is consulted. `requirements-automation.txt` pins the top-level versions used for validation; upstream feed revisions remain outside our control.
 
-After reviewing and approving a specific candidate, this command publishes it to the **local** frontend data directory; deployment still requires a reviewed Git push and supported deployment trigger:
+For isolated fixture/preview data only, strict candidate validation and a local manifest transaction can use an explicit non-live directory:
 
 ```powershell
-python weekly_pipeline.py publish --candidate work/my-new-candidate
+python weekly_pipeline.py publish --candidate work/my-new-candidate --data work/local-reviewed-preview
 ```
 
-Publication re-fetches the schedule, checks every remaining matchup/kickoff, and rejects any game that has started since generation. Do not use the older `export_json.py` CLI for unattended publishing: it remains available for legacy/manual workflows but lacks the new strict publication gates.
+Publication re-fetches the schedule, checks every remaining matchup/kickoff, and rejects any game that has started since generation. Live staging additionally requires a uniquely named publication review branch; historical live staging is forbidden. The legacy exporter rejects both live data roots, including resolved aliases and descendants. See [Milestone 5D compatibility and safety notes](docs/publication-hardening.md).
 
 ### Week detection, refresh cadence, and data cutoffs
 
@@ -180,7 +181,7 @@ python weekly_pipeline.py validate --candidate work/historical-week1-review --al
 
 A complete target-week schedule and weekly active roster are mandatory. Features use prior-week cutoffs, outcomes stay unavailable, and injuries stay Unknown because historical publication timestamps are unavailable. Every row/game/board is explicitly `historical_backfill`. Source-vintage and roster-revision limitations mean these boards are retrospective analysis, not evidence of genuine live prediction performance. A live-source Week 1 trial passed with 452 players/16 games. This does **not** certify all other missing weeks; each must be generated, validated, and reviewed separately. Existing Weeks 7–9 and their archived versions are untouched.
 
-Historical publication is never allowed in the workflow. If a reviewed backfill is approved later, `publish --candidate <path> --allow-historical` still refuses to replace any existing week. No historical backfills have been published in this milestone; Not Generated remains visible for missing weeks.
+Historical live publication is forbidden. Isolated local backfill previews may use `publish --candidate <path> --data <non-live-directory> --allow-historical`, which still refuses to replace an existing week. No historical backfills have been published in this milestone; Not Generated remains visible for missing weeks.
 
 ### Reviewed automated publication — Milestone 5B
 

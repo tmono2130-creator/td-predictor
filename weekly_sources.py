@@ -4,9 +4,8 @@ import time
 import pandas as pd
 import nflreadpy
 import td_predictor_v5 as v5
-from data_schema import TEAM_CODES
 from weekly_schedule import regular_games, kickoff, utc, utc_now
-from weekly_storage import GSIS_ID
+from roster_eligibility import EligibilityError, resolve_roster, select_weekly
 
 STAT_COLUMNS = {"player_id", "player_display_name", "position", "team", "season", "week",
                 "targets", "carries", "receptions", "receiving_tds", "rushing_tds", "passing_tds",
@@ -77,38 +76,22 @@ class FreshSources:
                         self.sleep(2 ** attempt)
         return self.cache[key].copy(deep=True)
 
-    def rosters(self, season, week, historical=False):
+    def rosters(self, season, week, historical=False, teams=None):
         weekly = self.get("weekly_rosters", season, optional=not historical)
-        if not weekly.empty:
-            require_columns(weekly, {"week"}, "weekly rosters")
-            weekly = weekly[pd.to_numeric(weekly.week, errors="raise").eq(week)].copy()
-            if "game_type" in weekly:
-                weekly = weekly[weekly.game_type.astype(str).str.upper().eq("REG")].copy()
-        if weekly.empty:
-            if historical:
-                raise ValueError("Historical boards require a week-specific roster; participation records cannot substitute")
-            weekly = self.get("rosters", season)
-            self.metadata["roster_scope"] = "live season roster retrieved before kickoff; target weekly roster unavailable"
-        else:
-            self.metadata["roster_scope"] = "target-week roster"
-        require_columns(weekly, {"status"}, "roster roles")
-        # ACT denotes current roster membership, not a game-day injury designation.
-        # DEV/CUT/RET/RES are excluded; elevations/activations appear on a later refresh.
-        self.metadata["roster_pool_policy"] = "skill positions on ACT roster only; injury status remains independent"
-        self.metadata["excluded_roster_rows"] = int((~weekly.status.eq("ACT")).sum())
-        weekly = weekly[weekly.status.eq("ACT")].copy()
-        roster = v5.normalize_rosters(weekly)
-        roster = roster[roster.position.isin(v5.POSITIONS)].copy()
-        if roster.empty or not roster.player_id.map(lambda x: bool(GSIS_ID.fullmatch(x))).all():
-            raise ValueError("Roster has missing or invalid GSIS player identifiers")
-        if roster.player_id.duplicated().any():
-            raise ValueError("Roster contains duplicate/ambiguous player assignments")
-        if not roster.team.isin(TEAM_CODES).all() or not roster.model_player_name.astype(str).str.strip().ne("").all():
-            raise ValueError("Roster is missing player names or team assignments")
+        target = select_weekly(weekly, season, week)
+        if target.empty and historical:
+            raise ValueError("Historical boards require a week-specific roster")
+        live = self.get('rosters', season) if target.empty else pd.DataFrame()
         known = self.get("players", season)
-        require_columns(known, {"gsis_id"}, "player identifiers")
-        if not roster.player_id.isin(set(known.gsis_id.dropna().astype(str))).all():
-            raise ValueError("Roster contains identifiers absent from the player crosswalk")
+        try:
+            roster, audit = resolve_roster(weekly, live, known, season, week, teams, historical)
+        except EligibilityError as exc:
+            self.metadata['roster_eligibility'] = exc.audit
+            raise
+        self.metadata['roster_eligibility'] = audit
+        self.metadata['roster_scope'] = audit['scope']
+        self.metadata['roster_pool_policy'] = 'verified ACT skill players on scheduled teams; unresolved eligibility blocks publication; injury status independent'
+        self.metadata['excluded_roster_rows'] = audit['counts']['exclude']
         return roster
 
     def history(self, schedule, season, week, cutoff):

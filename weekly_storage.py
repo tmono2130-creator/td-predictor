@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from weekly_schedule import kickoff, utc, utc_now
 from data_schema import validate_board, validate_breakdowns, SCHEMA_VERSION, SUPPORTED_WEEKS
+from publication_policy import require_review_checkout, fresh
 
 GSIS_ID = re.compile(r"00-\d{7}\Z")
 DEFAULT_DATA = Path(__file__).resolve().parent / "td-predictor-web" / "public" / "data"
@@ -127,6 +128,20 @@ def validate_candidate(candidate, now=None, allow_historical=False):
     actual = {(r["player_id"], r["game_id"], r["team"], r["opponent"]) for r in board["rows"]}
     if len(required) != len(roster) or actual != required or len(actual) != len(board["rows"]):
         raise ValueError("Incomplete or duplicate player-game coverage")
+    audit = receipt['source_metadata'].get('roster_eligibility')
+    if audit is not None:
+        if not isinstance(audit, dict) or not isinstance(audit.get('decisions'), list) or any(not isinstance(d, dict) for d in audit['decisions']):
+            raise ValueError('Invalid roster eligibility audit')
+        decisions = audit.get('decisions', [])
+        counts = {key:sum(d.get('decision') == key for d in decisions) for key in ('include','exclude','pending')}
+        included = [(d.get('player_id'), d.get('team'), d.get('position')) for d in decisions if d.get('decision') == 'include']
+        expected_pool = {(r['player_id'],r['team'],r['position']) for r in board['rows']}
+        if (audit.get('policy_version') != 'week-aware-v1' or audit.get('season') != season or audit.get('week') != week
+                or audit.get('counts') != counts or counts['pending'] or len(included) != len(set(included))
+                or set(audit.get('scheduled_teams', [])) != {g[t] for g in expected for t in ('home_team','away_team')}
+                or any(d.get('decision') not in counts for d in decisions)
+                or set(included) != expected_pool or any(d.get('roster_status') != 'ACT' for d in decisions if d.get('decision') == 'include')):
+            raise ValueError('Roster eligibility audit differs from candidate or has pending decisions')
     if {r["team"] for r in roster} != {g[t] for g in expected for t in ("away_team", "home_team")}:
         raise ValueError("Missing team player coverage")
     by_id = {g["game_id"]: g for g in expected}
@@ -173,12 +188,15 @@ def publish_candidate(candidate, root=DEFAULT_DATA, allow_historical=False, now=
     change any previously served bundle. Never repair/delete a lock automatically.
     """
     root = Path(root).resolve()
+    require_review_checkout(root, historical=allow_historical)
     root.mkdir(parents=True, exist_ok=True)
     lock = root / ".weekly-publish.lock"
     descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
         os.close(descriptor)
         board, breakdowns, receipt = validate_candidate(candidate, now=now, allow_historical=allow_historical)
+        if not allow_historical:
+            fresh(board, receipt, utc(now or utc_now()))
         manifest_path = root / "manifest.json"
         if digest(manifest_path) != receipt.get("base_manifest_sha256"):
             raise ValueError("Published manifest changed since generation; regenerate the candidate")

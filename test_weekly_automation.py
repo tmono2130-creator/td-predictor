@@ -1,10 +1,9 @@
 """Deterministic tests: no live source retrieval or real publication."""
 import hashlib
 import json
-import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +11,7 @@ import pandas as pd
 from weekly_schedule import kickoff, plan_week, refresh_due, retrieve_schedule, utc
 from weekly_storage import digest, write_new, publish_candidate, validate_candidate, validate_manifest, final_forecasts
 from weekly_sources import FreshSources, prior_rows, STAT_COLUMNS, PBP_REQUIRED
-from weekly_generation import generate_candidate, score_v5
+from weekly_generation import generate_candidate
 from weekly_pipeline import verify_current_schedule
 from automation_publish import publication_allowed
 
@@ -228,15 +227,15 @@ class SourceTests(unittest.TestCase):
         frame=pd.DataFrame([dict(season=2026,week=1,season_type='REG'),dict(season=2026,week=2,season_type='REG'),dict(season=2025,week=20,season_type='POST')])
         result=prior_rows(frame,2026,2);self.assertEqual(result.week.tolist(),[1])
     def test_historical_needs_weekly_roster(self):
-        f=FreshSources({'weekly_rosters':lambda _:pd.DataFrame([dict(week=2)])},sleep=lambda _:None)
+        f=FreshSources({'weekly_rosters':lambda _:pd.DataFrame([dict(season=2026,week=2)])},sleep=lambda _:None)
         with self.assertRaisesRegex(ValueError,'week-specific'):f.rosters(2026,1,historical=True)
     def test_invalid_roster_id_rejected(self):
-        frame=pd.DataFrame([dict(week=1,gsis_id='invalid',full_name='Fixture',team='KC',position='RB',status='ACT')])
-        f=FreshSources({'weekly_rosters':lambda _:frame},sleep=lambda _:None)
+        frame=pd.DataFrame([dict(season=2026,week=1,gsis_id='invalid',full_name='Fixture',team='KC',position='RB',status='ACT')])
+        f=FreshSources({'weekly_rosters':lambda _:frame,'players':lambda _:pd.DataFrame([{'gsis_id':'00-0030001'}])},sleep=lambda _:None)
         with self.assertRaisesRegex(ValueError,'identifiers'):f.rosters(2026,1)
     def test_practice_squad_is_not_current_forecast_pool(self):
-        frame=pd.DataFrame([dict(week=1,gsis_id='00-0030001',full_name='Fixture',team='KC',position='RB',status='ACT'),
-                            dict(week=1,gsis_id=None,full_name='Practice fixture',team='KC',position='RB',status='DEV')])
+        frame=pd.DataFrame([dict(season=2026,week=1,gsis_id='00-0030001',full_name='Fixture',team='KC',position='RB',status='ACT'),
+                            dict(season=2026,week=1,gsis_id=None,full_name='Practice fixture',team='KC',position='RB',status='DEV')])
         players=pd.DataFrame([dict(gsis_id='00-0030001')])
         f=FreshSources({'weekly_rosters':lambda _:frame,'players':lambda _:players},sleep=lambda _:None)
         self.assertEqual(f.rosters(2026,1).player_id.tolist(),['00-0030001'])
@@ -268,7 +267,7 @@ class GenerationTests(unittest.TestCase):
         pbp=pd.DataFrame(plays)
         class FixtureSources:
             metadata={'fixture':'test only'}
-            def rosters(self,*args):return roster.copy()
+            def rosters(self,*args,**kwargs):return roster.copy()
             def history(self,*args):return histories,pbp
             def injuries(self,*args):
                 result=pd.DataFrame(columns=['player_id','injury_status']);result.attrs['week_report_available']=False
