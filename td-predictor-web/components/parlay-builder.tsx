@@ -7,7 +7,7 @@ import { autoBuildParlay, parlayProbability, VOLATILITY_ORDER, type ParlayResult
 import { PlayerPicker, ParlayView } from "./shared";
 const errMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
 
-export default function ParlayTab({ rows }: { rows: BoardRow[] }) {
+export default function ParlayTab({ rows, selectedIds, onSelectionChange }: { rows: BoardRow[]; selectedIds: string[]; onSelectionChange: (ids: string[]) => void }) {
   const upcoming = useMemo(
     () => rows.filter((r) => r.game_status === "Upcoming").sort((a, b) => b.td_estimate - a.td_estimate),
     [rows],
@@ -15,7 +15,7 @@ export default function ParlayTab({ rows }: { rows: BoardRow[] }) {
   const [mode, setMode] = useState<"manual" | "auto">("manual");
 
   // manual
-  const [picked, setPicked] = useState<BoardRow[]>([]);
+  const picked = useMemo(() => selectedIds.flatMap(id => { const row = rows.find(p => p.player_id === id); return row ? [row] : []; }), [rows, selectedIds]);
   const pickedIds = useMemo(() => new Set(picked.map((p) => p.player_id)), [picked]);
   const manual = useMemo(() => {
     if (picked.length < 2) return { result: null as ParlayResult | null, error: null as string | null };
@@ -85,7 +85,7 @@ export default function ParlayTab({ rows }: { rows: BoardRow[] }) {
                     type="button"
                     className={styles.legRemove}
                     aria-label={`Remove ${p.player}`}
-                    onClick={() => setPicked((prev) => prev.filter((x) => x.player_id !== p.player_id))}
+                    onClick={() => onSelectionChange(selectedIds.filter(id => id !== p.player_id))}
                   >
                     ×
                   </button>
@@ -98,7 +98,7 @@ export default function ParlayTab({ rows }: { rows: BoardRow[] }) {
               players={upcoming}
               exclude={pickedIds}
               placeholder="Search a player or team to add…"
-              onPick={(p) => setPicked((prev) => (prev.length < 6 ? [...prev, p] : prev))}
+              onPick={(p) => onSelectionChange(selectedIds.length < 6 ? [...selectedIds, p.player_id] : selectedIds)}
             />
           ) : (
             <p className={styles.muted}>Six legs is the maximum — remove one to swap.</p>

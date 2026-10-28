@@ -3,16 +3,19 @@ import Link from "next/link";
 import { Activity, useState } from "react";
 import styles from "./page.module.css";
 import { useJson, isManifest, boardValidationError, normalizeBoard } from "../lib/data";
-import type { DataManifest, BoardFile, SectionId } from "../lib/types";
+import type { DataManifest, BoardFile, SectionId, BoardRow } from "../lib/types";
 import RankingsTab from "../components/rankings";
 import ParlayTab from "../components/parlay-builder";
 import MarketTab from "../components/market-check";
 import BreakdownTab from "../components/game-breakdown";
 import Overview from "../components/overview";
 import SnapshotFreshness from "../components/snapshot-freshness";
-const TABS: { id: SectionId; label: string; icon: string }[] = [
- { id: "dashboard", label: "Dashboard", icon: "◈" }, { id: "rankings", label: "Player Rankings", icon: "≡" },
- { id: "parlay", label: "Parlay Builder", icon: "⊕" }, { id: "breakdown", label: "Game Breakdown", icon: "▥" }, { id: "market", label: "Market Check", icon: "↗" },
+const TABS: { id: SectionId; label: string; accessible: string }[] = [
+ { id: "dashboard", label: "Home", accessible: "Dashboard" },
+ { id: "rankings", label: "TD Rankings", accessible: "Player Rankings" },
+ { id: "parlay", label: "Parlay Builder", accessible: "Parlay Builder" },
+ { id: "market", label: "Market Check", accessible: "Market Check" },
+ { id: "breakdown", label: "Game Breakdown", accessible: "Game Breakdown" },
 ];
 function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
   const seasonOptions = Object.keys(manifest.seasons).map(Number).filter(Number.isFinite).sort((a, b) => b - a);
@@ -30,16 +33,29 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
   const validationError = boardValidationError(data, season, week);
   const boardError = error ?? validationError;
   const rows = data && !boardError ? normalizeBoard(data) : [];
+  const snapshot = `${season}:${week}`;
+  const [selection, setSelection] = useState<{ snapshot: string; ids: string[] }>({ snapshot: "", ids: [] });
+  const selectedIds = selection.snapshot === snapshot ? selection.ids : [];
+  const updateSelection = (ids: string[]) => setSelection({ snapshot, ids });
+  const addToParlay = (player: BoardRow) => {
+    if (player.game_status !== "Upcoming" || selectedIds.includes(player.player_id) || selectedIds.length >= 6) return;
+    updateSelection([...selectedIds, player.player_id]);
+  };
   const supported = manifest.supported_weeks.includes(week);
 
   return (
     <div className={styles.app}>
       <a href="#main-content" className={styles.skipLink}>Skip to content</a>
-      <aside className={styles.sidebar}><Link className={styles.brand} href="/">NFL<span>PM</span><small>TOUCHDOWN INTELLIGENCE</small></Link><span className={styles.navLabel}>WORKSPACE</span><nav aria-label="Main navigation">{TABS.map(t => <button key={t.id} type="button" aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><span aria-hidden="true">{t.icon}</span>{t.label}</button>)}</nav><div className={styles.sidebarNote}><span className={styles.liveDot} /> SNAPSHOT ANALYTICS<p>Independent model estimates.<br />A clearer view of every matchup.</p></div></aside>
+      <div className={styles.masthead}>
+        <div className={styles.utilityBar}><span>PRO FOOTBALL / STATISTICS &amp; ANALYSIS</span><span>INDEPENDENT NFL ANALYTICS</span></div>
+        <div className={styles.brandRow}><Link className={styles.brand} href="/">NFL <span>PM</span><small>NFL TOUCHDOWN PREDICTION ANALYTICS</small></Link><div className={styles.edition}><strong>THE WEEKLY FOOTBALL DESK</strong><span>{season} SEASON · WEEK {week}</span><small>Player rankings • Matchup reports • Probability tools</small></div></div>
+        <nav className={styles.primaryNav} aria-label="Main navigation">{TABS.map(t => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}>{t.label}{t.id === "parlay" && selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}</button>)}</nav>
+        <div className={styles.breadcrumb}>NFL PM <span>»</span> {season} Season <span>»</span> Week {week} <span>»</span> <strong>{TABS.find(t => t.id === tab)?.label}</strong></div>
+      </div>
       <main id="main-content" className={styles.shell}>
         <header className={styles.header}>
-          <div className={styles.eyebrow}>NFL / ANALYTICS WORKSPACE</div><h1>{TABS.find(t => t.id === tab)?.label}</h1>
-          <p className={styles.subtitle}>Explore the slate. Understand the probabilities. Build your perspective.</p>
+          <div className={styles.eyebrow}>NFL PM / WEEKLY STATISTICS</div><h1>{TABS.find(t => t.id === tab)?.label}</h1>
+          <p className={styles.subtitle}>Published player estimates, scouting reports and probability calculators.</p>
           <div className={styles.metaRow}>
             <label className={styles.pill}>Season{" "}
               <select className={styles.select} aria-label="Season" value={String(season)} onChange={(e) => {
@@ -79,10 +95,10 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
         {data && !boardError && !loading && <>
           <div className={styles.snapshotBar}><span className={styles.liveDot} /> GENERATED SNAPSHOT <span>{data.meta.games.length} matchups · {rows.length} players</span></div>
           {tab === "dashboard" && <Overview rows={rows} meta={data.meta} onNavigate={setTab} />}
-          <Activity mode={tab === "rankings" ? "visible" : "hidden"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></Activity>
-          <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} /></Activity>
+          <Activity mode={tab === "rankings" ? "visible" : "hidden"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} onAdd={addToParlay} selectedIds={selectedIds} /></Activity>
+          <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} selectedIds={selectedIds} onSelectionChange={updateSelection} /></Activity>
           <Activity mode={tab === "market" ? "visible" : "hidden"}><MarketTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></Activity>
-          <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} dataUrl={breakdownsUrl} /></Activity>
+          <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} rows={rows} dataUrl={breakdownsUrl} /></Activity>
         </>}
         <footer className={styles.footer}>
           Data: nflverse (via nflreadpy). Est. TD% is a model&apos;s estimate from past play — not a guarantee and not a sportsbook price. For entertainment and analysis only; not betting advice. If gambling stops being fun, help is available at{" "}

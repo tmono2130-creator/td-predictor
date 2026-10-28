@@ -1,13 +1,13 @@
 "use client";
 import { useMemo, useState } from "react";
 import styles from "../app/page.module.css";
-import type { BoardMeta, BreakdownsFile } from "../lib/types";
+import type { BoardMeta, BoardRow, BreakdownsFile } from "../lib/types";
 
 import { TEAM_NAMES, POSITION_GROUPS as GROUPS, useJson, breakdownValidationError } from "../lib/data";
 
 import { DataTable } from "./shared";
 
-export default function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardMeta; dataUrl: string | null }) {
+export default function BreakdownTab({ boardMeta, rows, dataUrl }: { boardMeta: BoardMeta; rows: BoardRow[]; dataUrl: string | null }) {
   const { data, error, loading } = useJson<BreakdownsFile>(dataUrl);
   const validation = data ? breakdownValidationError(data, boardMeta) : null;
   const keys = useMemo(() => (data && !validation ? Object.keys(data.games) : []), [data, validation]);
@@ -106,6 +106,9 @@ export default function BreakdownTab({ boardMeta, dataUrl }: { boardMeta: BoardM
         Flags use fixed thresholds and minimum sample sizes. They&apos;re prompts for your own judgment, not model output.
       </p>
 
+      <h3 className={styles.sectionTitle}>Matchup touchdown rankings</h3>
+      <DataTable rows={rows.filter(r => (r.team === away && r.opponent === home) || (r.team === home && r.opponent === away)).sort((a,b) => b.td_estimate - a.td_estimate).slice(0,10).map((r,i) => ({Rank:i+1, Player:r.player, Team:r.team, Pos:r.position, "TD score":r.td_score, "TD probability %":r.td_estimate, Status:r.injury_status}))} />
+      <p className={styles.caption}>Top 10 published estimates for this matchup. Injury status does not establish game-day activation.</p>
       <h3 className={styles.sectionTitle}>Team scoring profile</h3>
       <p className={styles.muted}>Offense — how they score</p>
       <DataTable rows={bd.offense} />

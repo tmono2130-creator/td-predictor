@@ -8,7 +8,7 @@ import { TEAM_NAMES, POSITION_OPTIONS as POSITIONS } from "../lib/data";
 
 const teamLabel = (code: string) => TEAM_NAMES[code] ? `${TEAM_NAMES[code]} (${code})` : code;
 
-export default function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: BoardMeta }) {
+export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: BoardRow[]; meta: BoardMeta; onAdd: (player: BoardRow) => void; selectedIds: string[] }) {
   const [team, setTeam] = useState("ALL");
   const [positions, setPositions] = useState<Set<string>>(new Set<string>(POSITIONS));
   const [search, setSearch] = useState("");
@@ -34,14 +34,18 @@ export default function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: Bo
         (a, b) => {
           if (sort === "name") return a.player.localeCompare(b.player);
           if (sort === "ascending") return a.td_estimate - b.td_estimate;
-          return b.td_estimate - a.td_estimate;
+          const ascending = sort.endsWith("-asc");
+          const key = sort.replace(/-asc$/, "");
+          const value = (r: BoardRow) => key === "score" ? r.td_score : key === "team" ? r.team : key === "position" ? r.position : key === "opponent" ? r.opponent : key === "status" ? r.injury_status : key === "player" ? r.player : r.td_estimate;
+          const av = value(a), bv = value(b);
+          const result = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+          return (ascending ? result : -result) || a.player.localeCompare(b.player);
         },
       );
   }, [rows, team, positions, search, hideFinal, sort, injury]);
 
   const upcoming = useMemo(() => filtered.filter((r) => r.game_status === "Upcoming"), [filtered]);
   const top3 = upcoming.slice(0, 3);
-  const maxEst = filtered.reduce((m, r) => Math.max(m, r.td_estimate), 1);
   const shown = filtered.slice(0, limit);
   const medals = ["01 / UPCOMING", "02 / UPCOMING", "03 / UPCOMING"];
 
@@ -70,7 +74,7 @@ export default function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: Bo
 
       <div className={styles.panel}>
         <div className={styles.controls}>
-          <div className={styles.field}><label htmlFor="rk-sort">Sort by</label><select id="rk-sort" className={styles.select} value={sort} onChange={e => setSort(e.target.value)}><option value="probability">TD estimate: high to low</option><option value="ascending">TD estimate: low to high</option><option value="name">Player name: A–Z</option></select></div>
+          <div className={styles.field}><label htmlFor="rk-sort">Sort by</label><select id="rk-sort" className={styles.select} value={sort} onChange={e => setSort(e.target.value)}><option value="probability">TD estimate: high to low</option><option value="ascending">TD estimate: low to high</option><option value="name">Player name: A–Z</option>{!["probability","ascending","name"].includes(sort) && <option value={sort}>Table column: {sort}</option>}</select></div>
           <div className={styles.field}><label htmlFor="rk-injury">Injury status</label><select id="rk-injury" className={styles.select} value={injury} onChange={e => setInjury(e.target.value)}>{["ALL", "Active", "Questionable", "Doubtful", "Out", "IR", "Unknown"].map(s => <option key={s} value={s}>{s === "ALL" ? "All statuses" : s}</option>)}</select></div>
           <div className={styles.field}>
             <label htmlFor="rk-team">Team</label>
@@ -148,56 +152,16 @@ export default function RankingsTab({ rows, meta }: { rows: BoardRow[]; meta: Bo
       ) : (
         <div className={styles.tableWrap} tabIndex={0} role="region" aria-label="Scrollable data table">
           <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Player</th>
-                <th>Team</th>
-                <th>Pos</th>
-                <th>Opp</th>
-                <th>Game</th>
-                <th>Result</th>
-                <th>Est. TD%</th>
-                <th>Sample</th>
-                <th>Injury</th>
-                <th>Record timing</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((r, i) => {
-                const isFinal = r.game_status === "Final";
-                const gameLabel = r.game_status === "In Progress" ? "🏈 In progress" :
-                  r.game_status === "Upcoming" ? "Upcoming" : r.game_status === "Final" ? "✅ Final" : "Unknown";
-                const alpha = Math.min(0.55, (r.td_estimate / maxEst) * 0.55);
-                return (
-                  <tr key={r.player_id} className={isFinal ? styles.dim : undefined}>
-                    <td>
-                      <span className={styles.muted}>{i + 1}.</span> {r.player}
-                    </td>
-                    <td>{r.team}</td>
-                    <td>{r.position}</td>
-                    <td>
-                      {r.is_home === 0 ? "@" : r.is_home === 1 ? "vs" : ""} {r.opponent}
-                    </td>
-                    <td>{gameLabel}</td>
-                    <td>{isFinal ? (r.actual_scored_td === null ? "Outcome unavailable" : r.actual_scored_td ? "🎯 Scored TD" : "No TD") : "—"}</td>
-                    <td
-                      className={styles.numCell}
-                      style={{ background: `rgba(52, 211, 153, ${alpha.toFixed(3)})`, fontWeight: 600 }}
-                    >
-                      {fmtPct(r.td_estimate)}
-                    </td>
-                    <td>{r.games === 0 ? "🆕 No history" : `${r.games} games`}</td>
-                    <td>
-                      {r.injury_status === "Active" ? "Active" : r.injury_status === "Unknown" ? (
-                        <span className={styles.muted}>Unknown</span>
-                      ) : <span className={styles.warnText}>{r.injury_status}</span>}
-                    </td>
-                    <td>{r.prediction_timing === "pregame_snapshot" ? "Pregame snapshot" :
-                      r.prediction_timing === "historical_backfill" ? "Historical backfill" : "Timing unknown"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
+            <caption>PLAYER TD RANKINGS · WEEK {meta.week} · CLICK A COLUMN TO SORT / A PLAYER FOR DETAILS</caption>
+            <thead><tr><th scope="col">Rank</th>{([["player","Player"],["team","Team"],["position","Pos"],["opponent","Opp"],["score","TD score"],["probability","TD probability"],["status","Status"]] as const).map(([key,label]) => {
+              const active = sort === key || sort === `${key}-asc` || (key === "probability" && sort === "ascending") || (key === "player" && sort === "name");
+              const ascending = sort.endsWith("-asc") || sort === "ascending" || sort === "name";
+              return <th key={key} scope="col" aria-sort={active ? ascending ? "ascending" : "descending" : "none"}><button className={styles.sortButton} onClick={() => setSort(active && !ascending ? `${key}-asc` : key)}>{label}{active ? ascending ? " ▲" : " ▼" : ""}</button></th>;
+            })}<th scope="col">Game</th><th scope="col">Parlay</th></tr></thead>
+            <tbody>{shown.map((r,i) => <tr key={r.player_id} className={i < 3 && sort === "probability" ? styles.topRank : undefined}>
+              <td>{i+1}</td><td><details className={styles.playerDetails}><summary>{r.player}</summary><p>Sample: {r.games === 0 ? "No history — team/matchup context only" : `${r.games} games`}<br/>Record: {r.prediction_timing === "pregame_snapshot" ? "Pregame snapshot" : r.prediction_timing === "historical_backfill" ? "Historical backfill" : "Timing unknown"}<br/>Outcome: {r.game_status === "Final" && r.actual_scored_td !== null ? r.actual_scored_td ? "Scored TD" : "No TD" : "Outcome unavailable"}<br/>Injury: {r.injury_status} (not game-day activation)</p></details></td>
+              <td>{r.team}</td><td>{r.position}</td><td>{r.is_home === 0 ? "@" : r.is_home === 1 ? "vs" : ""} {r.opponent}</td><td className={styles.numCell}>{r.td_score.toFixed(1)}</td><td className={`${styles.numCell} ${styles.statAccent}`}>{fmtPct(r.td_estimate)}</td><td className={r.injury_status !== "Active" && r.injury_status !== "Unknown" ? styles.warnText : undefined}>{r.injury_status}</td><td>{r.game_status}</td><td><button className={`${styles.btn} ${styles.btnSmall}`} aria-label={`Add ${r.player} to parlay`} disabled={r.game_status !== "Upcoming" || selectedIds.includes(r.player_id) || selectedIds.length >= 6} onClick={() => onAdd(r)}>{selectedIds.includes(r.player_id) ? "Selected" : r.game_status !== "Upcoming" ? "Unavailable" : "+ Add"}</button></td>
+            </tr>)}</tbody>
           </table>
         </div>
       )}
