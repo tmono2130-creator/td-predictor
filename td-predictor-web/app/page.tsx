@@ -11,7 +11,7 @@ import BreakdownTab from "../components/game-breakdown";
 import Overview from "../components/overview";
 import SnapshotFreshness from "../components/snapshot-freshness";
 const TABS: { id: SectionId; label: string; accessible: string }[] = [
- { id: "dashboard", label: "Home", accessible: "Dashboard" },
+ { id: "dashboard", label: "Dashboard", accessible: "Dashboard" },
  { id: "rankings", label: "TD Rankings", accessible: "Player Rankings" },
  { id: "parlay", label: "Parlay Builder", accessible: "Parlay Builder" },
  { id: "market", label: "Market Check", accessible: "Market Check" },
@@ -46,16 +46,16 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
   return (
     <div className={styles.app}>
       <a href="#main-content" className={styles.skipLink}>Skip to content</a>
-      <div className={styles.masthead}>
-        <div className={styles.utilityBar}><span>PRO FOOTBALL / STATISTICS &amp; ANALYSIS</span><span>INDEPENDENT NFL ANALYTICS</span></div>
-        <div className={styles.brandRow}><Link className={styles.brand} href="/">NFL <span>PM</span><small>NFL TOUCHDOWN PREDICTION ANALYTICS</small></Link><div className={styles.edition}><strong>THE WEEKLY FOOTBALL DESK</strong><span>{season} SEASON · WEEK {week}</span><small>Player rankings • Matchup reports • Probability tools</small></div></div>
-        <nav className={styles.primaryNav} aria-label="Main navigation">{TABS.map(t => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}>{t.label}{t.id === "parlay" && selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}</button>)}</nav>
-        <div className={styles.breadcrumb}>NFL PM <span>»</span> {season} Season <span>»</span> Week {week} <span>»</span> <strong>{TABS.find(t => t.id === tab)?.label}</strong></div>
-      </div>
+      <aside className={styles.sidebar}>
+        <Link className={styles.brand} href="/">NFL<span>PM</span><small>TOUCHDOWN ANALYTICS</small></Link>
+        <span className={styles.navLabel}>WORKSPACE</span>
+        <nav aria-label="Main navigation">{TABS.map((t,i) => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d={["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z","M4 5h16M4 12h16M4 19h16M8 3v18","M4 7h16v14H4zM8 7V5a4 4 0 018 0v2M8 13h8M12 9v8","M3 17l6-6 4 3 8-10M15 4h6v6","M4 4h16v16H4zM4 10h16M10 4v16"][i]} /></svg><span>{t.label}</span>{t.id === "parlay" && selectedIds.length > 0 ? <small className={styles.navCount}>{selectedIds.length}</small> : null}</button>)}</nav>
+        <div className={styles.sidebarNote}><span className={styles.liveDot} /> PUBLISHED SNAPSHOTS<p>Independent estimates.<br/>Your weekly football perspective.</p><span className={styles.sidebarSeason}>{season} SEASON · WEEK {week}</span></div>
+      </aside>
       <main id="main-content" className={styles.shell}>
         <header className={styles.header}>
-          <div className={styles.eyebrow}>NFL PM / WEEKLY STATISTICS</div><h1>{TABS.find(t => t.id === tab)?.label}</h1>
-          <p className={styles.subtitle}>Published player estimates, scouting reports and probability calculators.</p>
+          <div className={styles.eyebrow}>NFL / TOUCHDOWN ANALYTICS</div><h1>{TABS.find(t => t.id === tab)?.label}</h1>
+          <p className={styles.subtitle}>Explore the slate, compare probabilities and understand every matchup.</p>
           <div className={styles.metaRow}>
             <label className={styles.pill}>Season{" "}
               <select className={styles.select} aria-label="Season" value={String(season)} onChange={(e) => {

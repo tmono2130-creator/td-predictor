@@ -1,12 +1,12 @@
 @import "tailwindcss";
-:root { color-scheme: light; --background:#d7dce2; --foreground:#202832; }
-@theme inline { --color-background:var(--background); --color-foreground:var(--foreground); --font-sans:Arial,Helvetica,sans-serif; --font-mono:"Courier New",monospace; }
+:root { color-scheme:dark; --background:#0D0B17; --foreground:#F5F3FF; --surface:#171329; --card:#211A38; --purple:#8B5CF6; --accent:#A78BFA; --deep-purple:#6D28D9; --muted:#B8B0CC; --border:#382C54; }
+@theme inline { --color-background:var(--background); --color-foreground:var(--foreground); --font-sans:"Segoe UI",Arial,Helvetica,sans-serif; --font-mono:"Courier New",monospace; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--background); color:var(--foreground); font-family:Arial,Helvetica,sans-serif; font-size:12px; }
+body { margin:0; background:var(--background); color:var(--foreground); font-family:"Segoe UI",Arial,Helvetica,sans-serif; }
 button,input,select { font:inherit; }
 button,select,summary { cursor:pointer; }
 button { color:inherit; }
-a { color:#164c84; }
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible { outline:2px solid #b71928; outline-offset:2px; }
-button:disabled { opacity:.6; cursor:not-allowed; }
-::selection { background:#173e68; color:#fff; }
+a { color:var(--accent); }
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible { outline:2px solid #C4B5FD; outline-offset:3px; }
+button:disabled { opacity:.55; cursor:not-allowed; }
+::selection { background:#6D28D9; color:#fff; }
