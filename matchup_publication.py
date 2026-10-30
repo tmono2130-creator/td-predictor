@@ -10,7 +10,7 @@ CORE_FILES = frozenset({"board.json", "breakdowns.json", "receipt.json"})
 
 
 def bundle_files(receipt):
-    return CORE_FILES | ({SIDECAR} if HASH_KEY in receipt else set())
+    return CORE_FILES | ({SIDECAR} if HASH_KEY in receipt else set()) | ({"game-predictor.json"} if "game_predictor_sha256" in receipt else set())
 
 
 def manifest_fields(folder, receipt):

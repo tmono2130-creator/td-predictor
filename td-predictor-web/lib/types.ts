@@ -53,6 +53,8 @@ export type RawBoardRow = {
 
 export type BoardFile = { meta: BoardMeta; rows: RawBoardRow[] };
 export type WeeklyFiles = {
+  game_predictor?: string;
+  game_predictor_sha256?: string;
   matchup_intelligence?: string;
   matchup_intelligence_sha256?: string;
   board: string;
@@ -99,6 +101,6 @@ export type BreakdownsFile = {
   errors: Record<string, string>;
 };
 
-export type SectionId = "dashboard" | "rankings" | "parlay" | "market" | "breakdown";
+export type SectionId = "dashboard" | "rankings" | "parlay" | "market" | "breakdown" | "game";
 export type StoredComparison = { player_id: string; odds: string };
 export type { ParlayResult };

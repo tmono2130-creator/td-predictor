@@ -87,6 +87,13 @@ def verify_json(expected, fetch=read_url):
                 if (not isinstance(reference, str) or PREFIX + reference not in expected
                         or hashlib.sha256(expected[PREFIX + reference]).hexdigest() != pin):
                     raise ValueError('Production matchup manifest hash/reference mismatch')
+    for season in manifest.get('seasons', {}).values():
+        for entry in season['weeks'].values():
+            if 'game_predictor' in entry or 'game_predictor_sha256' in entry:
+                reference = entry.get('game_predictor')
+                if (not isinstance(reference, str) or PREFIX + reference not in expected
+                        or hashlib.sha256(expected[PREFIX + reference]).hexdigest() != entry.get('game_predictor_sha256')):
+                    raise ValueError('Game deployment manifest hash/reference mismatch')
     hashes = {}
     for name, value in sorted(expected.items()):
         relative = name.removeprefix(PREFIX)

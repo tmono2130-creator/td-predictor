@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NFL PM Game Predictor v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "games"
+  ],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "model_version",
+        "season",
+        "week",
+        "generated_at",
+        "data_cutoff",
+        "classification",
+        "sources",
+        "model",
+        "model_sha256",
+        "primary_method",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "model_version": {
+          "const": "game-ppp-v1"
+        },
+        "season": {
+          "type": "integer",
+          "minimum": 2020
+        },
+        "week": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "data_cutoff": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "classification": {
+          "enum": [
+            "pregame_snapshot",
+            "retrospective_analysis"
+          ]
+        },
+        "sources": {
+          "type": "object",
+          "required": [
+            "schedule",
+            "team_games"
+          ],
+          "properties": {
+            "schedule": {
+              "type": "object",
+              "required": [
+                "as_of",
+                "sha256",
+                "origin"
+              ],
+              "properties": {
+                "as_of": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "team_games": {
+              "type": "object",
+              "required": [
+                "as_of",
+                "sha256",
+                "origin"
+              ],
+              "properties": {
+                "as_of": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "origin": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "model": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "model_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "primary_method": {
+          "const": "baseline"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "games": {
+      "type": "object",
+      "patternProperties": {
+        "^20[0-9]{2}_[0-9]{2}_[A-Z]+_[A-Z]+$": {
+          "$ref": "#/$defs/game"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "game": {
+      "type": "object",
+      "required": [
+        "game_id",
+        "home_team",
+        "away_team",
+        "kickoff_utc",
+        "status",
+        "teams",
+        "methods",
+        "warnings"
+      ],
+      "properties": {
+        "game_id": {
+          "type": "string"
+        },
+        "home_team": {
+          "type": "string"
+        },
+        "away_team": {
+          "type": "string"
+        },
+        "kickoff_utc": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "available",
+            "insufficient_data"
+          ]
+        },
+        "teams": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/team"
+          }
+        },
+        "methods": {
+          "type": "object",
+          "properties": {
+            "baseline": {
+              "$ref": "#/$defs/result"
+            },
+            "adjusted": {
+              "$ref": "#/$defs/result"
+            }
+          },
+          "additionalProperties": false
+        },
+        "warnings": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "team": {
+      "type": "object",
+      "required": [
+        "summary",
+        "opponent_defensive_ppp",
+        "expected_plays",
+        "expected_ppp",
+        "baseline",
+        "features"
+      ],
+      "properties": {
+        "summary": {
+          "type": "object",
+          "required": [
+            "games",
+            "game_ids",
+            "last_kickoff_utc",
+            "offensive_points",
+            "offensive_plays",
+            "allowed_points",
+            "defensive_plays",
+            "offensive_ppp",
+            "defensive_ppp_allowed",
+            "plays_per_game",
+            "plays_faced_per_game",
+            "red_zone_drives_per_game"
+          ],
+          "properties": {
+            "games": {
+              "type": "number"
+            },
+            "game_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^20[0-9]{2}_[0-9]{2}_[A-Z]+_[A-Z]+$"
+              }
+            },
+            "last_kickoff_utc": {
+              "type": "string"
+            },
+            "offensive_points": {
+              "type": "number"
+            },
+            "offensive_plays": {
+              "type": "number"
+            },
+            "allowed_points": {
+              "type": "number"
+            },
+            "defensive_plays": {
+              "type": "number"
+            },
+            "offensive_ppp": {
+              "type": "number"
+            },
+            "defensive_ppp_allowed": {
+              "type": "number"
+            },
+            "plays_per_game": {
+              "type": "number"
+            },
+            "plays_faced_per_game": {
+              "type": "number"
+            },
+            "red_zone_drives_per_game": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "opponent_defensive_ppp": {
+          "type": "number"
+        },
+        "expected_plays": {
+          "type": "number"
+        },
+        "expected_ppp": {
+          "type": "number"
+        },
+        "baseline": {
+          "type": "number"
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "scores",
+        "home_margin",
+        "total",
+        "favored",
+        "win_probability"
+      ],
+      "properties": {
+        "scores": {
+          "type": "object",
+          "minProperties": 2,
+          "maxProperties": 2,
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "home_margin": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "favored": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "win_probability": {
+          "type": "null"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

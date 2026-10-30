@@ -8,6 +8,7 @@ import RankingsTab from "../components/rankings";
 import ParlayTab from "../components/parlay-builder";
 import MarketTab from "../components/market-check";
 import BreakdownTab from "../components/game-breakdown";
+import GamePredictor from "../components/game-predictor";
 import Overview from "../components/overview";
 import SnapshotFreshness from "../components/snapshot-freshness";
 const TABS: { id: SectionId; label: string; accessible: string }[] = [
@@ -15,6 +16,7 @@ const TABS: { id: SectionId; label: string; accessible: string }[] = [
  { id: "rankings", label: "TD Rankings", accessible: "Player Rankings" },
  { id: "parlay", label: "Parlay Builder", accessible: "Parlay Builder" },
  { id: "market", label: "Market Check", accessible: "Market Check" },
+ { id: "game", label: "Game Predictor", accessible: "Game Predictor" },
  { id: "breakdown", label: "Game Breakdown", accessible: "Game Breakdown" },
 ];
 function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
@@ -49,7 +51,7 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
       <aside className={styles.sidebar}>
         <Link className={styles.brand} href="/">NFL<span>PM</span><small>TOUCHDOWN ANALYTICS</small></Link>
         <span className={styles.navLabel}>WORKSPACE</span>
-        <nav aria-label="Main navigation">{TABS.map((t,i) => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d={["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z","M4 5h16M4 12h16M4 19h16M8 3v18","M4 7h16v14H4zM8 7V5a4 4 0 018 0v2M8 13h8M12 9v8","M3 17l6-6 4 3 8-10M15 4h6v6","M4 4h16v16H4zM4 10h16M10 4v16"][i]} /></svg><span>{t.label}</span>{t.id === "parlay" && selectedIds.length > 0 ? <small className={styles.navCount}>{selectedIds.length}</small> : null}</button>)}</nav>
+        <nav aria-label="Main navigation">{TABS.map((t,i) => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d={["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z","M4 5h16M4 12h16M4 19h16M8 3v18","M4 7h16v14H4zM8 7V5a4 4 0 018 0v2M8 13h8M12 9v8","M3 17l6-6 4 3 8-10M15 4h6v6","M3 12h18M12 3v18M4 4l16 16","M4 4h16v16H4zM4 10h16M10 4v16"][i]} /></svg><span>{t.label}</span>{t.id === "parlay" && selectedIds.length > 0 ? <small className={styles.navCount}>{selectedIds.length}</small> : null}</button>)}</nav>
         <div className={styles.sidebarNote}><span className={styles.liveDot} /> PUBLISHED SNAPSHOTS<p>Independent estimates.<br/>Your weekly football perspective.</p><span className={styles.sidebarSeason}>{season} SEASON · WEEK {week}</span></div>
       </aside>
       <main id="main-content" className={styles.shell}>
@@ -98,6 +100,7 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
           <Activity mode={tab === "rankings" ? "visible" : "hidden"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} onAdd={addToParlay} selectedIds={selectedIds} /></Activity>
           <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} selectedIds={selectedIds} onSelectionChange={updateSelection} /></Activity>
           <Activity mode={tab === "market" ? "visible" : "hidden"}><MarketTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></Activity>
+          <Activity mode={tab === "game" ? "visible" : "hidden"}><GamePredictor key={`${season}:${week}`} season={season} week={week} games={data.meta.games} url={entry?.game_predictor?`/data/${entry.game_predictor}`:null} pin={entry?.game_predictor_sha256??null}/></Activity>
           <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} rows={rows} dataUrl={breakdownsUrl} intelligenceUrl={entry?.matchup_intelligence ? `/data/${entry.matchup_intelligence}` : null} intelligenceHash={entry?.matchup_intelligence_sha256 ?? null} /></Activity>
         </>}
         <footer className={styles.footer}>

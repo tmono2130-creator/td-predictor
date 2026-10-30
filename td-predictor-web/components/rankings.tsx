@@ -3,13 +3,14 @@ import { useMemo, useState } from "react";
 import styles from "../app/page.module.css";
 import type { BoardRow, BoardMeta } from "../lib/types";
 import { formatPercent as fmtPct } from "../lib/format";
+import { matchesTeams, toggleTeam } from "../lib/team-filter";
 import { TEAM_NAMES, POSITION_OPTIONS as POSITIONS } from "../lib/data";
 
 
 const teamLabel = (code: string) => TEAM_NAMES[code] ? `${TEAM_NAMES[code]} (${code})` : code;
 
 export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: BoardRow[]; meta: BoardMeta; onAdd: (player: BoardRow) => void; selectedIds: string[] }) {
-  const [team, setTeam] = useState("ALL");
+  const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
   const [positions, setPositions] = useState<Set<string>>(new Set<string>(POSITIONS));
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("probability");
@@ -17,14 +18,14 @@ export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: 
   const [limit, setLimit] = useState(50);
   const [hideFinal, setHideFinal] = useState(false);
 
-  const teams = useMemo(() => Array.from(new Set(rows.map((r) => r.team))).sort(), [rows]);
+  const teams = Object.keys(TEAM_NAMES).sort();
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows
       .filter(
         (r) =>
-          (team === "ALL" || r.team === team) &&
+          matchesTeams(r.team, selectedTeams) &&
           positions.has(r.position) &&
           (injury === "ALL" || r.injury_status === injury) &&
           (!hideFinal || r.game_status === "Upcoming") &&
@@ -42,7 +43,7 @@ export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: 
           return (ascending ? result : -result) || a.player.localeCompare(b.player);
         },
       );
-  }, [rows, team, positions, search, hideFinal, sort, injury]);
+  }, [rows, selectedTeams, positions, search, hideFinal, sort, injury]);
 
   const upcoming = useMemo(() => filtered.filter((r) => r.game_status === "Upcoming"), [filtered]);
   const top3 = upcoming.slice(0, 3);
@@ -76,17 +77,13 @@ export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: 
         <div className={styles.controls}>
           <div className={styles.field}><label htmlFor="rk-sort">Sort by</label><select id="rk-sort" className={styles.select} value={sort} onChange={e => setSort(e.target.value)}><option value="probability">TD estimate: high to low</option><option value="ascending">TD estimate: low to high</option><option value="name">Player name: A–Z</option>{!["probability","ascending","name"].includes(sort) && <option value={sort}>Table column: {sort}</option>}</select></div>
           <div className={styles.field}><label htmlFor="rk-injury">Injury status</label><select id="rk-injury" className={styles.select} value={injury} onChange={e => setInjury(e.target.value)}>{["ALL", "Active", "Questionable", "Doubtful", "Out", "IR", "Unknown"].map(s => <option key={s} value={s}>{s === "ALL" ? "All statuses" : s}</option>)}</select></div>
-          <div className={styles.field}>
-            <label htmlFor="rk-team">Team</label>
-            <select id="rk-team" className={styles.select} value={team} onChange={(e) => setTeam(e.target.value)}>
-              <option value="ALL">All teams</option>
-              {teams.map((t) => (
-                <option key={t} value={t}>
-                  {teamLabel(t)}
-                </option>
-              ))}
-            </select>
-          </div>
+          <details className={`${styles.field} ${styles.teamPicker}`}>
+            <summary className={styles.select}>Teams · {selectedTeams.length ? `${selectedTeams.length} selected` : "All Teams"}</summary>
+            <div className={styles.teamOptions} role="group" aria-label="Filter teams">
+              <button type="button" className={styles.btn} onClick={() => setSelectedTeams([])}>All Teams / Clear Selection</button>
+              {teams.map(code => <label className={styles.checkRow} key={code}><input type="checkbox" aria-label={`Include ${teamLabel(code)}`} checked={selectedTeams.includes(code)} onChange={() => setSelectedTeams(current => toggleTeam(current, code))}/>{teamLabel(code)}</label>)}
+            </div>
+          </details>
           <div className={styles.field}>
             <label htmlFor="rk-search">Search player</label>
             <input
@@ -112,6 +109,10 @@ export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: 
               ))}
             </select>
           </div>
+        </div>
+        <div className={styles.chips} role="group" aria-label="Selected teams">
+          {selectedTeams.length ? selectedTeams.map(code => <button type="button" key={code} className={`${styles.chip} ${styles.chipActive}`} aria-label={`Remove ${teamLabel(code)} filter`} onClick={() => setSelectedTeams(current => toggleTeam(current, code))}>{code} ×</button>) : <span className={styles.muted}>All Teams</span>}
+          {selectedTeams.length > 0 && <button type="button" className={styles.chip} onClick={() => setSelectedTeams([])}>Clear team filters</button>}
         </div>
         <div className={styles.chips} role="group" aria-label="Positions">
           {POSITIONS.map((p) => (

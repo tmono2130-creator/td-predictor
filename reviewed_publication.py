@@ -9,9 +9,10 @@ import tempfile
 from pathlib import Path
 from weekly_pipeline import verify_current_schedule
 from weekly_schedule import retrieve_schedule, utc, utc_now
-from weekly_storage import validate_candidate, validate_manifest
+from weekly_storage import validate_candidate, validate_manifest, candidate_files, game_manifest_fields
+from game_projection_artifact import NAME as GAME_FILE
 from publication_policy import fresh as fresh
-from matchup_publication import CORE_FILES, SIDECAR, bundle_files, manifest_fields
+from matchup_publication import CORE_FILES, SIDECAR, manifest_fields
 
 PREFIX = 'td-predictor-web/public/data/'
 MANIFEST = PREFIX + 'manifest.json'
@@ -91,18 +92,17 @@ def validate_change(repo, base, head, branch, records=None, now=None):
             return {'kind': 'rollback', 'manifest_sha256': hashlib.sha256(after[MANIFEST]).hexdigest()}
         if not re.fullmatch(r'nfl-pm/publication/[0-9]+-[0-9]+', branch):
             raise ValueError('Data updates require a publication or rollback branch')
-        if len(added) not in (3, 4) or set(changes) != added | {MANIFEST}:
-            raise ValueError('Publication must add one approved immutable bundle and change manifest')
+        if len(added) not in (3,4,5) or set(changes) != added | {MANIFEST}:
+            raise ValueError('Publication must add one explicitly approved bundle and change manifest')
         folders = {str(Path(p).parent).replace('\\', '/') for p in added}
-        if len(folders) != 1 or {Path(p).name for p in added} not in (BUNDLE, BUNDLE | {SIDECAR}):
+        if len(folders) != 1 or {Path(p).name for p in added} not in (BUNDLE, BUNDLE|{GAME_FILE}, BUNDLE|{SIDECAR}, BUNDLE|{GAME_FILE,SIDECAR}):
             raise ValueError('Unexpected publication bundle')
         folder = folders.pop().removeprefix(PREFIX)
         if not re.fullmatch(r'\d{4}/week-\d{1,2}/\d{8}T\d{6}Z-[0-9a-f]{12}', folder):
             raise ValueError('Invalid immutable snapshot path')
         now = utc(now or utc_now())
         board, _, receipt = validate_candidate(new_root / folder, now=now)
-        if {Path(p).name for p in added} != bundle_files(receipt):
-            raise ValueError('Receipt and publication file allowlist differ')
+        if {Path(p).name for p in added}!=candidate_files(receipt):raise ValueError('Game receipt/file allowlist mismatch')
         if receipt.get('base_manifest_sha256') != hashlib.sha256(before[MANIFEST]).hexdigest():
             raise ValueError('Concurrent manifest change; regenerate')
         fresh(board, receipt, now)
@@ -113,7 +113,7 @@ def validate_change(repo, base, head, branch, records=None, now=None):
         expected = copy.deepcopy(old_manifest)
         expected['seasons'].setdefault(str(meta['season']), {'weeks': {}})['weeks'][str(meta['week'])] = {
             'board': folder + '/board.json', 'breakdowns': folder + '/breakdowns.json',
-            'generated_at': meta['generated_at'], 'model': meta['model'], **manifest_fields(folder, receipt)}
+            'generated_at': meta['generated_at'], 'model': meta['model'],**manifest_fields(folder,receipt), **game_manifest_fields(folder,receipt)}
         if manifest != expected:
             raise ValueError('Manifest changes exceed single approved week pointer')
         return {'kind': 'publication', 'season': meta['season'], 'week': meta['week'],

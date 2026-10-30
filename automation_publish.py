@@ -1,5 +1,4 @@
 """CI-only creation of a reviewed data PR. Never push to main or deploy."""
-from matchup_publication import bundle_files
 import base64
 import json
 import os
@@ -11,7 +10,8 @@ from verify_publication import NoRedirect
 from reviewed_publication import MANIFEST, PREFIX, fresh, revision, validate_change
 from weekly_pipeline import verify_current_schedule
 from weekly_schedule import retrieve_schedule, utc_now
-from weekly_storage import DEFAULT_DATA, publish_candidate, validate_candidate
+from weekly_storage import DEFAULT_DATA, publish_candidate, validate_candidate, candidate_files
+from game_projection_artifact import HASH as GAME_HASH
 
 
 def git(*args):
@@ -22,6 +22,10 @@ def git(*args):
         env['GIT_CONFIG_KEY_0'] = 'http.https://github.com/.extraheader'
         env['GIT_CONFIG_VALUE_0'] = 'AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode()
     return subprocess.check_output(['git', *args], text=True, env=env).strip()
+
+
+def game_publication_allowed(receipt, enabled):
+    return GAME_HASH not in receipt or enabled == "true"
 
 
 def publication_allowed(event, ref, enabled, requested):
@@ -72,12 +76,14 @@ def create_data_pr(candidate, expected_head, run_id, attempt, root=DEFAULT_DATA)
     if git('ls-remote', 'origin', 'refs/heads/nfl-pm/publication/*'):
         raise ValueError('Publication branch exists; inspect its PR outcome before cleanup')
     board, _, receipt = validate_candidate(candidate)
+    if not game_publication_allowed(receipt, os.environ.get("NFL_PM_GAME_PREDICTOR_ENABLED")):
+        raise ValueError("Game Predictor publication is inactive pending separate release approval")
     fresh(board, receipt, utc_now())
     records = retrieve_schedule()
     verify_current_schedule(board, records)
     git('switch', '-c', branch)
     directory = publish_candidate(candidate, root)
-    allowed = {MANIFEST} | {PREFIX + directory + '/' + n for n in bundle_files(receipt)}
+    allowed = {MANIFEST} | {PREFIX + directory + '/' + n for n in candidate_files(receipt)}
     changed = set(git('diff', '--name-only').splitlines()) | set(git('ls-files', '--others', '--exclude-standard').splitlines())
     if changed != allowed:
         raise ValueError('Unexpected working-tree changes; no review branch push permitted')
