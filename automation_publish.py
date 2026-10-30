@@ -1,4 +1,5 @@
 """CI-only creation of a reviewed data PR. Never push to main or deploy."""
+from matchup_publication import bundle_files
 import base64
 import json
 import os
@@ -76,7 +77,7 @@ def create_data_pr(candidate, expected_head, run_id, attempt, root=DEFAULT_DATA)
     verify_current_schedule(board, records)
     git('switch', '-c', branch)
     directory = publish_candidate(candidate, root)
-    allowed = {MANIFEST} | {PREFIX + directory + '/' + n for n in ('board.json', 'breakdowns.json', 'receipt.json')}
+    allowed = {MANIFEST} | {PREFIX + directory + '/' + n for n in bundle_files(receipt)}
     changed = set(git('diff', '--name-only').splitlines()) | set(git('ls-files', '--others', '--exclude-standard').splitlines())
     if changed != allowed:
         raise ValueError('Unexpected working-tree changes; no review branch push permitted')

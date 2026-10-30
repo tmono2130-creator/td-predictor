@@ -34,7 +34,19 @@ try {
       assert.equal(await page.locator('table tbody tr').count(), board.rows.length);
       for (const section of ['Parlay Builder', 'Market Check', 'Game Breakdown', 'Dashboard']) {
         await page.getByRole('navigation').getByRole('button', { name: section, exact: true }).click();
-        if (section === 'Game Breakdown') await page.getByLabel('Game', { exact: true }).waitFor();
+        if (section === 'Game Breakdown') {
+          await page.getByLabel('Game', { exact: true }).waitFor();
+          for (const label of ['Offensive Identity', 'Defensive Vulnerabilities', 'TD Recommendations']) {
+            await page.getByRole('group', { name: 'Game Breakdown sections' }).getByRole('button', { name: label, exact: true }).click();
+            if (files.matchup_intelligence) {
+              await page.getByRole('region', { name: label === 'TD Recommendations' ? 'Matchup-Based TD Recommendations' : label, exact: true }).waitFor();
+              assert.equal(await page.getByRole('alert').count(), 0, 'Published intelligence must validate and render');
+            } else {
+              await page.getByText('Matchup Intelligence has not been published for this snapshot.', { exact: false }).waitFor();
+            }
+          }
+          await page.getByRole('group', { name: 'Game Breakdown sections' }).getByRole('button', { name: 'TD Breakdown', exact: true }).click();
+        }
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
       }
     }

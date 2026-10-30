@@ -49,6 +49,7 @@ export function isManifest(value: unknown): value is DataManifest {
   return Object.entries(value.seasons).every(([season, entry]) => /^\d{4}$/.test(season) && record(entry) && record(entry.weeks) &&
     Object.entries(entry.weeks).every(([week, file]) => value.supported_weeks instanceof Array && value.supported_weeks.includes(Number(week)) &&
       record(file) && safePath(file.board) && (file.breakdowns === null || safePath(file.breakdowns)) &&
+      ((file.matchup_intelligence === undefined && file.matchup_intelligence_sha256 === undefined) || (safePath(file.matchup_intelligence) && typeof file.matchup_intelligence_sha256 === "string" && /^[a-f0-9]{64}$/.test(file.matchup_intelligence_sha256))) &&
       typeof file.generated_at === "string" && Number.isFinite(Date.parse(file.generated_at)) && ["fitted", "composite"].includes(String(file.model))));
 }
 
