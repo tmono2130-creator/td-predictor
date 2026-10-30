@@ -231,3 +231,7 @@ node scripts/candidate-smoke.mjs
 ```
 
 Some legacy exports lack explicit model fingerprints or snapshot-classification fields. The UI shows unavailable metadata rather than inventing it, and the final-forecast index excludes archives without sufficient provenance. Those legacy files are preserved byte-for-byte.
+
+### Matchup Intelligence — Milestone 7 (local implementation)
+
+Game Breakdown now has optional Offensive Identity, Defensive Vulnerabilities, and TD Recommendations sections. These consume a separately hashed, validated static sidecar and never alter V5 probabilities. Existing published weeks show an explicit unpublished state until an approved sidecar publication contract is activated. See [data availability, methodology, local commands, tests and activation requirements](docs/matchup-intelligence.md). No new production artifacts or publishing automation are enabled.

@@ -6,13 +6,15 @@ import type { BoardMeta, BoardRow, BreakdownsFile } from "../lib/types";
 import { TEAM_NAMES, POSITION_GROUPS as GROUPS, useJson, breakdownValidationError } from "../lib/data";
 
 import { DataTable } from "./shared";
+import MatchupIntelligence, { type IntelligenceView } from "./matchup-intelligence";
 
-export default function BreakdownTab({ boardMeta, rows, dataUrl }: { boardMeta: BoardMeta; rows: BoardRow[]; dataUrl: string | null }) {
+export default function BreakdownTab({ boardMeta, rows, dataUrl, intelligenceUrl, intelligenceHash }: { boardMeta: BoardMeta; rows: BoardRow[]; dataUrl: string | null; intelligenceUrl:string|null; intelligenceHash:string|null }) {
   const { data, error, loading } = useJson<BreakdownsFile>(dataUrl);
   const validation = data ? breakdownValidationError(data, boardMeta) : null;
   const keys = useMemo(() => (data && !validation ? Object.keys(data.games) : []), [data, validation]);
   const [selected, setSelected] = useState("");
   const [side, setSide] = useState(0);
+  const [view,setView] = useState<"breakdown"|IntelligenceView>("breakdown");
 
   if (!dataUrl) {
     return <div className={`${styles.notice} ${styles.noticeInfo}`}>No game breakdown export is available for this season and week.</div>;
@@ -85,6 +87,9 @@ export default function BreakdownTab({ boardMeta, rows, dataUrl }: { boardMeta: 
       </div>
 
       <div className={styles.matchupHero}><div><span className={styles.eyebrow}>AWAY</span><strong>{away}</strong><small>{TEAM_NAMES[away]}</small></div><span className={styles.muted}>VS</span><div><span className={styles.eyebrow}>HOME</span><strong>{home}</strong><small>{TEAM_NAMES[home]}</small></div></div>
+      <div className={styles.chips} role="group" aria-label="Game Breakdown sections">{([["breakdown","TD Breakdown"],["offense","Offensive Identity"],["defense","Defensive Vulnerabilities"],["recommendations","TD Recommendations"]] as const).map(([id,label])=><button key={id} aria-pressed={view===id} className={`${styles.chip} ${view===id?styles.chipActive:""}`} onClick={()=>setView(id)}>{label}</button>)}</div>
+      {view!=="breakdown"&&<MatchupIntelligence view={view} url={intelligenceUrl} hash={intelligenceHash} board={boardMeta} rows={rows} gameId={boardMeta.games.find(g=>g.away_team===away&&g.home_team===home)!.game_id} team={team} onTeamChange={t=>setSide(t===away?0:1)}/>}
+      <div hidden={view!=="breakdown"}>
       <p className={styles.caption} style={{ marginTop: 0 }}>
         Window: each team&apos;s last {bd.meta.lookback} regular-season games before this week ({away}:{" "}
         {bd.meta.games_used[away]} games, {bd.meta.prior_season_games[away]} from last season · {home}:{" "}
@@ -153,6 +158,7 @@ export default function BreakdownTab({ boardMeta, rows, dataUrl }: { boardMeta: 
         counts the game&apos;s first rushing/receiving TD over the last two seasons (defensive and special-teams TDs
         ignored) · Status is the official injury report, not gameday inactives.
       </p>
+      </div>
     </div>
   );
 }

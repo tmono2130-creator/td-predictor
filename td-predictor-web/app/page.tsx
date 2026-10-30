@@ -98,7 +98,7 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
           <Activity mode={tab === "rankings" ? "visible" : "hidden"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} onAdd={addToParlay} selectedIds={selectedIds} /></Activity>
           <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} selectedIds={selectedIds} onSelectionChange={updateSelection} /></Activity>
           <Activity mode={tab === "market" ? "visible" : "hidden"}><MarketTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></Activity>
-          <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} rows={rows} dataUrl={breakdownsUrl} /></Activity>
+          <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} rows={rows} dataUrl={breakdownsUrl} intelligenceUrl={entry?.matchup_intelligence ? `/data/${entry.matchup_intelligence}` : null} intelligenceHash={entry?.matchup_intelligence_sha256 ?? null} /></Activity>
         </>}
         <footer className={styles.footer}>
           Data: nflverse (via nflreadpy). Est. TD% is a model&apos;s estimate from past play — not a guarantee and not a sportsbook price. For entertainment and analysis only; not betting advice. If gambling stops being fun, help is available at{" "}

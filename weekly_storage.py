@@ -11,6 +11,8 @@ from weekly_schedule import kickoff, utc, utc_now
 from data_schema import validate_board, validate_breakdowns, SCHEMA_VERSION, SUPPORTED_WEEKS
 from publication_policy import require_review_checkout, fresh
 
+from matchup_publication import SIDECAR, HASH_KEY, validate_optional, validate_sidecar, manifest_fields
+
 GSIS_ID = re.compile(r"00-\d{7}\Z")
 DEFAULT_DATA = Path(__file__).resolve().parent / "td-predictor-web" / "public" / "data"
 
@@ -63,6 +65,18 @@ def validate_manifest(root):
                 raise ValueError("Manifest metadata does not match board")
             if files.get("breakdowns") is not None:
                 validate_breakdowns(load_json(safe_file(root, files["breakdowns"])), int(season), int(week), board["meta"]["games"])
+            if "matchup_intelligence" in files or HASH_KEY in files:
+                if "matchup_intelligence" not in files or HASH_KEY not in files:
+                    raise ValueError("Matchup manifest reference and hash must be paired")
+                sidecar = safe_file(root, files["matchup_intelligence"])
+                board_path = safe_file(root, files["board"])
+                if sidecar.name != SIDECAR or sidecar.parent != board_path.parent:
+                    raise ValueError("Matchup artifact must belong to the same immutable snapshot")
+                receipt = load_json(sidecar.with_name("receipt.json"))
+                if (receipt.get(HASH_KEY) != files[HASH_KEY] or receipt.get("board_sha256") != digest(board_path)
+                        or receipt.get("breakdowns_sha256") != digest(sidecar.with_name("breakdowns.json"))):
+                    raise ValueError("Matchup manifest/receipt binding mismatch")
+                validate_sidecar(sidecar, board, receipt)
     return manifest
 
 
@@ -178,6 +192,7 @@ def validate_candidate(candidate, now=None, allow_historical=False):
             raise ValueError("Forecast boards do not infer observed outcomes")
         if historical and row["injury_status"] != "Unknown":
             raise ValueError("Historical injury publication times are unavailable")
+    validate_optional(candidate, board, receipt, now=now)
     return board, breakdowns, receipt
 
 
@@ -213,11 +228,16 @@ def publish_candidate(candidate, root=DEFAULT_DATA, allow_historical=False, now=
         folder.mkdir(parents=True, exist_ok=False)
         for name, value in (("board.json", board), ("breakdowns.json", breakdowns), ("receipt.json", receipt)):
             write_new(folder / name, value)
+        if HASH_KEY in receipt:
+            with (folder / SIDECAR).open("xb") as stream:
+                stream.write((Path(candidate) / SIDECAR).read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
         validate_candidate(folder, now=now, allow_historical=allow_historical)
         updated = copy.deepcopy(manifest)
         updated["seasons"].setdefault(str(season), {"weeks": {}})["weeks"][str(week)] = {
             "board": relative + "/board.json", "breakdowns": relative + "/breakdowns.json",
-            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"]}
+            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"], **manifest_fields(relative, receipt)}
         temporary = root / (".manifest-" + uuid.uuid4().hex + ".json")
         try:
             write_new(temporary, updated)
