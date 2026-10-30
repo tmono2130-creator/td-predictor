@@ -48,3 +48,5 @@
 
 /* Stage A: compact, bounded multi-team filter with normal document flow. */
 .teamPicker { min-width:0; }.teamPicker summary { cursor:pointer; list-style:revert; }.teamOptions { display:grid; gap:8px; max-height:240px; overflow:auto; padding:12px; border:1px solid var(--border); border-radius:8px; margin-top:8px; background:var(--surface); }.teamOptions label { overflow-wrap:anywhere; white-space:normal; }.teamOptions input { flex-shrink:0; }.teamOptions button { white-space:normal; }
+
+.gamePredictor { min-width:0; overflow-wrap:anywhere; }.gamePredictor>.sectionHeading { flex-wrap:wrap; gap:12px; }.gamePredictor .field { max-width:100%; }.gamePredictor .select { min-width:0; max-width:100%; }

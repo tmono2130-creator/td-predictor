@@ -76,6 +76,13 @@ def wait_ready(sha, token, fetch=api, sleep=time.sleep, attempts=40):
 
 def verify_json(expected, fetch=read_url):
     """Compare ALL committed JSON bytes, including inactive immutable archives."""
+    manifest=json.loads(expected[PREFIX+'manifest.json'])
+    for season in manifest.get('seasons',{}).values():
+        for entry in season['weeks'].values():
+            if 'game_predictor' in entry or 'game_predictor_sha256' in entry:
+                path=PREFIX+entry.get('game_predictor','')
+                if path not in expected or hashlib.sha256(expected[path]).hexdigest()!=entry.get('game_predictor_sha256'):
+                    raise ValueError('Game deployment manifest hash/reference mismatch')
     hashes = {}
     for name, value in sorted(expected.items()):
         relative = name.removeprefix(PREFIX)

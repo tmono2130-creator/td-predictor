@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 from weekly_schedule import kickoff, utc, utc_now
 from data_schema import validate_board, validate_breakdowns, SCHEMA_VERSION, SUPPORTED_WEEKS
-from publication_policy import require_review_checkout, fresh
+from publication_policy import require_review_checkout, fresh, is_live_path
+from game_projection_artifact import NAME as GAME_FILE, HASH as GAME_HASH, validate_file as validate_game_file
 
 GSIS_ID = re.compile(r"00-\d{7}\Z")
 DEFAULT_DATA = Path(__file__).resolve().parent / "td-predictor-web" / "public" / "data"
@@ -63,7 +64,23 @@ def validate_manifest(root):
                 raise ValueError("Manifest metadata does not match board")
             if files.get("breakdowns") is not None:
                 validate_breakdowns(load_json(safe_file(root, files["breakdowns"])), int(season), int(week), board["meta"]["games"])
+            if "game_predictor" in files or GAME_HASH in files:
+                if "game_predictor" not in files or GAME_HASH not in files:raise ValueError("Game manifest reference/hash must be paired")
+                artifact=safe_file(root,files["game_predictor"]);board_path=safe_file(root,files["board"])
+                if artifact.name!=GAME_FILE or artifact.parent!=board_path.parent:raise ValueError("Game artifact outside immutable snapshot")
+                receipt=load_json(artifact.with_name("receipt.json"))
+                if receipt.get(GAME_HASH)!=files[GAME_HASH] or receipt.get("board_sha256")!=digest(board_path) or receipt.get("breakdowns_sha256")!=digest(artifact.with_name("breakdowns.json")):
+                    raise ValueError("Game manifest/receipt binding mismatch")
+                validate_game_file(artifact,board,receipt)
     return manifest
+
+
+def candidate_files(receipt):
+    return {"board.json","breakdowns.json","receipt.json"} | ({GAME_FILE} if GAME_HASH in receipt else set())
+
+
+def game_manifest_fields(relative,receipt):
+    return {"game_predictor":relative+"/"+GAME_FILE,GAME_HASH:receipt[GAME_HASH]} if GAME_HASH in receipt else {}
 
 
 def validate_candidate(candidate, now=None, allow_historical=False):
@@ -178,6 +195,9 @@ def validate_candidate(candidate, now=None, allow_historical=False):
             raise ValueError("Forecast boards do not infer observed outcomes")
         if historical and row["injury_status"] != "Unknown":
             raise ValueError("Historical injury publication times are unavailable")
+    if {p.name for p in candidate.iterdir()}!=candidate_files(receipt) or any(p.is_symlink() or not p.is_file() for p in candidate.iterdir()):
+        raise ValueError("Unexpected candidate files")
+    if GAME_HASH in receipt:validate_game_file(candidate/GAME_FILE,board,receipt,now,publishing=True)
     return board, breakdowns, receipt
 
 
@@ -195,6 +215,8 @@ def publish_candidate(candidate, root=DEFAULT_DATA, allow_historical=False, now=
     try:
         os.close(descriptor)
         board, breakdowns, receipt = validate_candidate(candidate, now=now, allow_historical=allow_historical)
+        if GAME_HASH in receipt and is_live_path(root) and os.environ.get("NFL_PM_GAME_PREDICTOR_ENABLED")!="true":
+            raise ValueError("Game Predictor publication is inactive pending separate release approval")
         if not allow_historical:
             fresh(board, receipt, utc(now or utc_now()))
         manifest_path = root / "manifest.json"
@@ -213,11 +235,14 @@ def publish_candidate(candidate, root=DEFAULT_DATA, allow_historical=False, now=
         folder.mkdir(parents=True, exist_ok=False)
         for name, value in (("board.json", board), ("breakdowns.json", breakdowns), ("receipt.json", receipt)):
             write_new(folder / name, value)
+        if GAME_HASH in receipt:
+            with (folder/GAME_FILE).open("xb") as stream:
+                stream.write((Path(candidate)/GAME_FILE).read_bytes());stream.flush();os.fsync(stream.fileno())
         validate_candidate(folder, now=now, allow_historical=allow_historical)
         updated = copy.deepcopy(manifest)
         updated["seasons"].setdefault(str(season), {"weeks": {}})["weeks"][str(week)] = {
             "board": relative + "/board.json", "breakdowns": relative + "/breakdowns.json",
-            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"]}
+            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"],**game_manifest_fields(relative,receipt)}
         temporary = root / (".manifest-" + uuid.uuid4().hex + ".json")
         try:
             write_new(temporary, updated)

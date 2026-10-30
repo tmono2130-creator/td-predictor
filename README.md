@@ -231,3 +231,7 @@ node scripts/candidate-smoke.mjs
 ```
 
 Some legacy exports lack explicit model fingerprints or snapshot-classification fields. The UI shows unavailable metadata rather than inventing it, and the final-forecast index excludes archives without sufficient provenance. Those legacy files are preserved byte-for-byte.
+
+### Milestone 8 development — release inactive
+
+The Next.js rankings support arbitrary multi-team filtering. A separate Game Predictor consumes optional hashed static artifacts and shows an unavailable state when none are published. PPP remains the primary method; the adjusted method is experimental, and no numerical win confidence is claimed. See [formulas, real-source evaluation, tests and release gates](docs/milestone-8.md). This development branch does not enable artifact publication, schedules or deployment.

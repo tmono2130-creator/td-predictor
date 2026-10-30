@@ -48,7 +48,7 @@ export function isManifest(value: unknown): value is DataManifest {
       new Set(value.supported_weeks).size !== value.supported_weeks.length || !record(value.seasons) || !Object.keys(value.seasons).length) return false;
   return Object.entries(value.seasons).every(([season, entry]) => /^\d{4}$/.test(season) && record(entry) && record(entry.weeks) &&
     Object.entries(entry.weeks).every(([week, file]) => value.supported_weeks instanceof Array && value.supported_weeks.includes(Number(week)) &&
-      record(file) && safePath(file.board) && (file.breakdowns === null || safePath(file.breakdowns)) &&
+      record(file) && ((file.game_predictor === undefined && file.game_predictor_sha256 === undefined) || (safePath(file.game_predictor) && typeof file.game_predictor_sha256 === "string" && /^[a-f0-9]{64}$/.test(file.game_predictor_sha256))) && safePath(file.board) && (file.breakdowns === null || safePath(file.breakdowns)) &&
       typeof file.generated_at === "string" && Number.isFinite(Date.parse(file.generated_at)) && ["fitted", "composite"].includes(String(file.model))));
 }
 
