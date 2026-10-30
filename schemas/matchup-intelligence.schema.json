@@ -1,0 +1,772 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NFL PM Matchup Intelligence v1",
+  "description": "Structural contract. matchup_schema.py additionally verifies temporal cutoffs, identities, denominators, sample policy, V5 bindings and designation evidence.",
+  "type": "object",
+  "properties": {
+    "meta": {
+      "$ref": "#/$defs/meta"
+    },
+    "games": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/game"
+      }
+    }
+  },
+  "required": [
+    "games",
+    "meta"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "meta": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "methodology_version": {
+          "const": "matchup-v1"
+        },
+        "season": {
+          "type": "integer",
+          "minimum": 2002
+        },
+        "week": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18
+        },
+        "board_generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "data_as_of": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_mode": {
+          "enum": [
+            "pregame_snapshot",
+            "retrospective_analysis"
+          ]
+        },
+        "source_as_of": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "source_fingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "required": [
+            "schedule",
+            "pbp",
+            "player_games",
+            "weekly_rosters",
+            "players"
+          ]
+        },
+        "policy": {
+          "type": "object"
+        },
+        "roster_audit": {
+          "type": "object"
+        },
+        "input_games": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "game_id": {
+                "type": "string"
+              },
+              "kickoff_utc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "week": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "game_id",
+              "kickoff_utc",
+              "week"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "board_generated_at",
+        "data_as_of",
+        "evidence_mode",
+        "generated_at",
+        "input_games",
+        "limitations",
+        "methodology_version",
+        "policy",
+        "roster_audit",
+        "schema_version",
+        "season",
+        "source_as_of",
+        "source_fingerprints",
+        "week"
+      ],
+      "additionalProperties": false
+    },
+    "game": {
+      "type": "object",
+      "properties": {
+        "game_id": {
+          "type": "string"
+        },
+        "away_team": {
+          "type": "string"
+        },
+        "home_team": {
+          "type": "string"
+        },
+        "kickoff_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "offenses": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/offense"
+          }
+        },
+        "defenses": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/defense"
+          }
+        },
+        "recommendations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/recommendation"
+          }
+        }
+      },
+      "required": [
+        "away_team",
+        "defenses",
+        "game_id",
+        "home_team",
+        "kickoff_utc",
+        "offenses",
+        "recommendations"
+      ],
+      "additionalProperties": false
+    },
+    "sample": {
+      "type": "object",
+      "properties": {
+        "rz_run_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_plays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_trips": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "goal_line_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "field_position_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position_identity_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "games": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pass_plays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "yards": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "epa_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rush_tds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "run_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_passes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "plays_per_game": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "epa_per_play": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_td_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pass_tds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position_identity_matched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_runs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "drive_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "position_identity_coverage": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "yards_per_play": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_td_drives": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "run_plays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "plays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "success_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "game_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "position_td_exclusions": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "drive_sample",
+        "epa_per_play",
+        "epa_sample",
+        "field_position_sample",
+        "game_ids",
+        "games",
+        "goal_line_opportunities",
+        "pass_plays",
+        "pass_tds",
+        "plays",
+        "plays_per_game",
+        "position_identity_coverage",
+        "position_identity_matched",
+        "position_identity_total",
+        "position_td_exclusions",
+        "run_plays",
+        "run_rate",
+        "rush_tds",
+        "rz_passes",
+        "rz_plays",
+        "rz_run_rate",
+        "rz_runs",
+        "rz_td_drives",
+        "rz_td_rate",
+        "rz_trips",
+        "success_rate",
+        "yards",
+        "yards_per_play"
+      ],
+      "additionalProperties": false
+    },
+    "position": {
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "string"
+        },
+        "rz_tds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "yards": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "yards_per_opportunity": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_td_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "td_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "carries",
+        "opportunities",
+        "position",
+        "rz_opportunities",
+        "rz_td_rate",
+        "rz_tds",
+        "targets",
+        "td_rate",
+        "tds",
+        "yards",
+        "yards_per_opportunity"
+      ],
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "snap_participation_pct": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "carry_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "position": {
+          "type": "string"
+        },
+        "goal_line_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "team_carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "player": {
+          "type": "string"
+        },
+        "team": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "team_targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "player_id": {
+          "type": "string",
+          "pattern": "^00-[0-9]{7}$"
+        },
+        "carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snap_sample_games": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "team_rz_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "carries",
+        "carry_share",
+        "goal_line_opportunities",
+        "opportunities",
+        "player",
+        "player_id",
+        "position",
+        "rz_carries",
+        "rz_opportunities",
+        "rz_share",
+        "rz_targets",
+        "snap_participation_pct",
+        "snap_sample_games",
+        "target_share",
+        "targets",
+        "team",
+        "team_carries",
+        "team_rz_opportunities",
+        "team_targets"
+      ],
+      "additionalProperties": false
+    },
+    "recommendation": {
+      "type": "object",
+      "properties": {
+        "snap_participation_pct": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "carry_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "position": {
+          "type": "string"
+        },
+        "goal_line_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "target_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "team_carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "player": {
+          "type": "string"
+        },
+        "team": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "team_targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "player_id": {
+          "type": "string",
+          "pattern": "^00-[0-9]{7}$"
+        },
+        "carries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snap_sample_games": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "team_rz_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rz_share": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rz_opportunities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opponent": {
+          "type": "string"
+        },
+        "game_id": {
+          "type": "string"
+        },
+        "v5_probability_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "advantage": {
+          "enum": [
+            "Favorable",
+            "Neutral",
+            "Unfavorable",
+            "Insufficient Data"
+          ]
+        },
+        "explanation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "defense_position": {
+          "$ref": "#/$defs/position"
+        },
+        "league_position": {
+          "$ref": "#/$defs/position"
+        },
+        "offense_games": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "defense_games": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "advantage",
+        "carries",
+        "carry_share",
+        "defense_games",
+        "defense_position",
+        "explanation",
+        "game_id",
+        "goal_line_opportunities",
+        "league_position",
+        "offense_games",
+        "opponent",
+        "opportunities",
+        "player",
+        "player_id",
+        "position",
+        "rz_carries",
+        "rz_opportunities",
+        "rz_share",
+        "rz_targets",
+        "snap_participation_pct",
+        "snap_sample_games",
+        "target_share",
+        "targets",
+        "team",
+        "team_carries",
+        "team_rz_opportunities",
+        "team_targets",
+        "v5_probability_pct"
+      ],
+      "additionalProperties": false
+    },
+    "offense": {
+      "type": "object",
+      "properties": {
+        "recent": {
+          "$ref": "#/$defs/sample"
+        },
+        "season": {
+          "$ref": "#/$defs/sample"
+        },
+        "trend": {
+          "$ref": "#/$defs/sample"
+        },
+        "players": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/usage"
+          }
+        },
+        "personnel": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "personnel",
+        "players",
+        "recent",
+        "season",
+        "trend"
+      ],
+      "additionalProperties": false
+    },
+    "defense": {
+      "type": "object",
+      "properties": {
+        "recent": {
+          "$ref": "#/$defs/sample"
+        },
+        "season": {
+          "$ref": "#/$defs/sample"
+        },
+        "trend": {
+          "$ref": "#/$defs/sample"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/position"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "league": {
+          "type": "object",
+          "properties": {
+            "sample": {
+              "$ref": "#/$defs/sample"
+            },
+            "positions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/position"
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          },
+          "required": [
+            "positions",
+            "sample"
+          ],
+          "additionalProperties": false
+        },
+        "opponent_adjustment": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "league",
+        "opponent_adjustment",
+        "positions",
+        "recent",
+        "season",
+        "trend"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

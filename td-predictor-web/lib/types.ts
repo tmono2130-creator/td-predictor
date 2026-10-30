@@ -55,6 +55,8 @@ export type BoardFile = { meta: BoardMeta; rows: RawBoardRow[] };
 export type WeeklyFiles = {
   game_predictor?: string;
   game_predictor_sha256?: string;
+  matchup_intelligence?: string;
+  matchup_intelligence_sha256?: string;
   board: string;
   breakdowns: string | null;
   generated_at: string;

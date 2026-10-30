@@ -12,6 +12,8 @@ from data_schema import validate_board, validate_breakdowns, SCHEMA_VERSION, SUP
 from publication_policy import require_review_checkout, fresh, is_live_path
 from game_projection_artifact import NAME as GAME_FILE, HASH as GAME_HASH, validate_file as validate_game_file
 
+from matchup_publication import SIDECAR, HASH_KEY, validate_optional, validate_sidecar, manifest_fields, bundle_files
+
 GSIS_ID = re.compile(r"00-\d{7}\Z")
 DEFAULT_DATA = Path(__file__).resolve().parent / "td-predictor-web" / "public" / "data"
 
@@ -72,11 +74,23 @@ def validate_manifest(root):
                 if receipt.get(GAME_HASH)!=files[GAME_HASH] or receipt.get("board_sha256")!=digest(board_path) or receipt.get("breakdowns_sha256")!=digest(artifact.with_name("breakdowns.json")):
                     raise ValueError("Game manifest/receipt binding mismatch")
                 validate_game_file(artifact,board,receipt)
+            if "matchup_intelligence" in files or HASH_KEY in files:
+                if "matchup_intelligence" not in files or HASH_KEY not in files:
+                    raise ValueError("Matchup manifest reference and hash must be paired")
+                sidecar = safe_file(root, files["matchup_intelligence"])
+                board_path = safe_file(root, files["board"])
+                if sidecar.name != SIDECAR or sidecar.parent != board_path.parent:
+                    raise ValueError("Matchup artifact must belong to the same immutable snapshot")
+                receipt = load_json(sidecar.with_name("receipt.json"))
+                if (receipt.get(HASH_KEY) != files[HASH_KEY] or receipt.get("board_sha256") != digest(board_path)
+                        or receipt.get("breakdowns_sha256") != digest(sidecar.with_name("breakdowns.json"))):
+                    raise ValueError("Matchup manifest/receipt binding mismatch")
+                validate_sidecar(sidecar, board, receipt)
     return manifest
 
 
 def candidate_files(receipt):
-    return {"board.json","breakdowns.json","receipt.json"} | ({GAME_FILE} if GAME_HASH in receipt else set())
+    return bundle_files(receipt)
 
 
 def game_manifest_fields(relative,receipt):
@@ -196,8 +210,9 @@ def validate_candidate(candidate, now=None, allow_historical=False):
         if historical and row["injury_status"] != "Unknown":
             raise ValueError("Historical injury publication times are unavailable")
     if {p.name for p in candidate.iterdir()}!=candidate_files(receipt) or any(p.is_symlink() or not p.is_file() for p in candidate.iterdir()):
-        raise ValueError("Unexpected candidate files")
+        raise ValueError("Unexpected candidate bundle files")
     if GAME_HASH in receipt:validate_game_file(candidate/GAME_FILE,board,receipt,now,publishing=True)
+    validate_optional(candidate, board, receipt, now=now)
     return board, breakdowns, receipt
 
 
@@ -238,11 +253,17 @@ def publish_candidate(candidate, root=DEFAULT_DATA, allow_historical=False, now=
         if GAME_HASH in receipt:
             with (folder/GAME_FILE).open("xb") as stream:
                 stream.write((Path(candidate)/GAME_FILE).read_bytes());stream.flush();os.fsync(stream.fileno())
+        if HASH_KEY in receipt:
+            with (folder / SIDECAR).open("xb") as stream:
+                stream.write((Path(candidate) / SIDECAR).read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
         validate_candidate(folder, now=now, allow_historical=allow_historical)
         updated = copy.deepcopy(manifest)
         updated["seasons"].setdefault(str(season), {"weeks": {}})["weeks"][str(week)] = {
             "board": relative + "/board.json", "breakdowns": relative + "/breakdowns.json",
-            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"],**game_manifest_fields(relative,receipt)}
+            "generated_at": board["meta"]["generated_at"], "model": board["meta"]["model"],**manifest_fields(relative,receipt), **game_manifest_fields(relative,receipt)}
+
         temporary = root / (".manifest-" + uuid.uuid4().hex + ".json")
         try:
             write_new(temporary, updated)

@@ -235,3 +235,6 @@ Some legacy exports lack explicit model fingerprints or snapshot-classification 
 ### Milestone 8 development — release inactive
 
 The Next.js rankings support arbitrary multi-team filtering. A separate Game Predictor consumes optional hashed static artifacts and shows an unavailable state when none are published. PPP remains the primary method; the adjusted method is experimental, and no numerical win confidence is claimed. See [formulas, real-source evaluation, tests and release gates](docs/milestone-8.md). This development branch does not enable artifact publication, schedules or deployment.
+### Matchup Intelligence — Milestone 7 (local implementation)
+
+Game Breakdown now has optional Offensive Identity, Defensive Vulnerabilities, and TD Recommendations sections. These consume a separately hashed, validated static sidecar and never alter V5 probabilities. Existing published weeks show an explicit unpublished state until an approved sidecar publication contract is activated. See [data availability, methodology, local commands, tests and activation requirements](docs/matchup-intelligence.md). No new production artifacts or publishing automation are enabled.

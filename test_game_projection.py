@@ -166,3 +166,63 @@ class DataPRTests(unittest.TestCase):
         (f.data/'manifest.json').write_text(f.fixture_git('show',f'{f.head}:{MANIFEST}'),encoding='utf-8')
         rollback=f.commit();self.assertEqual(validate_change(f.repo,self.head,rollback,'nfl-pm/rollback/game-test',[game()],f.now)['kind'],'rollback')
         self.assertIn(PREFIX+f.folder+'/'+NAME,tree(f.repo,rollback))
+
+
+class CombinedSidecarTests(unittest.TestCase):
+    def test_both_attachment_orders_and_fail_closed_integrity(self):
+        from test_matchup_publication import attach as attach_matchup
+        from matchup_publication import SIDECAR, HASH_KEY, bundle_files
+        for matchup_first in (True, False):
+            with self.subTest(matchup_first=matchup_first), tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+                root = Path(temp)
+                c, _ = candidate(root / 'candidate')
+                source = root / NAME
+                write_new(source, artifact())
+                if matchup_first:
+                    attach_matchup(c)
+                    attach(c, source, NOW)
+                else:
+                    attach(c, source, NOW)
+                    attach_matchup(c)
+                _, _, receipt = validate_candidate(c, now=NOW)
+                self.assertEqual(bundle_files(receipt), {'board.json', 'breakdowns.json', 'receipt.json', NAME, SIDECAR})
+                out = root / 'data'
+                relative = publish_candidate(c, out, now=NOW)
+                files = validate_manifest(out)['seasons']['2026']['weeks']['1']
+                for name, key in ((NAME, HASH), (SIDECAR, HASH_KEY)):
+                    self.assertEqual(files[key], digest(c / name))
+                    self.assertEqual((out / relative / name).read_bytes(), (c / name).read_bytes())
+                    original = (c / name).read_bytes()
+                    (c / name).write_bytes(original + b' ')
+                    with self.assertRaises(ValueError): validate_candidate(c, now=NOW)
+                    (c / name).write_bytes(original)
+                    (c / name).unlink()
+                    with self.assertRaises(ValueError): validate_candidate(c, now=NOW)
+                    (c / name).write_bytes(original)
+                with self.assertRaises(ValueError): validate_candidate(c, now=NOW + timedelta(days=1))
+
+    def test_combined_review_deployment_and_rollback(self):
+        from test_matchup_publication import attach as attach_matchup
+        from matchup_publication import SIDECAR
+        f = fixtures.DataPRTests('test_valid_data_only_pr_and_complete_coverage')
+        f.setUp()
+        self.addCleanup(f.doCleanups)
+        rewrite(f.candidate, 'receipt.json', lambda r: r.update(base_manifest_sha256=digest(f.data / 'manifest.json')))
+        source = f.repo / NAME
+        write_new(source, artifact(f.now))
+        attach(f.candidate, source, f.now)
+        attach_matchup(f.candidate, f.now)
+        folder = publish_candidate(f.candidate, f.data, now=f.now)
+        head = f.commit()
+        self.assertEqual(validate_change(f.repo, f.head, head, 'nfl-pm/publication/99-1', [game()], f.now)['players'], 2)
+        expected = tree(f.repo, head)
+        def fetch(url): return expected[PREFIX + url.removeprefix(PRODUCTION + '/data/')]
+        result = verify_json(expected, fetch)
+        for name in (NAME, SIDECAR):
+            self.assertIn(folder + '/' + name, result)
+            with self.assertRaises(ValueError):
+                verify_json(expected, lambda url: b'{}' if url.endswith(name) else fetch(url))
+        (f.data / 'manifest.json').write_text(f.fixture_git('show', f'{f.head}:{MANIFEST}'), encoding='utf-8')
+        rollback = f.commit()
+        self.assertEqual(validate_change(f.repo, head, rollback, 'nfl-pm/rollback/both', [game()], f.now)['kind'], 'rollback')
+        for name in (NAME, SIDECAR): self.assertIn(PREFIX + folder + '/' + name, tree(f.repo, rollback))
