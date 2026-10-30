@@ -11,7 +11,7 @@ from weekly_storage import validate_manifest
 
 PROJECT = 'prj_BMbAPCEIR8gvJBa4eSLRuPvhAWir'
 TEAM = 'team_Eb1qaCcmH0YMrhfjywQr9mON'
-PRODUCTION = 'https://td-predictor.vercel.app'
+PRODUCTION = 'https://onopm.space'
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -63,9 +63,9 @@ def wait_ready(sha, token, fetch=api, sleep=time.sleep, attempts=40):
                 if (detail.get('readyState') != 'READY' or detail.get('target') != 'production'
                         or detail.get('meta', {}).get('githubCommitSha') != sha
                         or detail.get('projectId') != PROJECT
-                        or 'td-predictor.vercel.app' not in detail.get('alias', [])):
+                        or 'onopm.space' not in detail.get('alias', [])):
                     raise ValueError('Ready deployment is not the exact production alias target')
-                alias = fetch('/v4/aliases/td-predictor.vercel.app?' + urlencode({'teamId': TEAM, 'projectId': PROJECT}), token)
+                alias = fetch('/v4/aliases/onopm.space?' + urlencode({'teamId': TEAM, 'projectId': PROJECT}), token)
                 if alias.get('deploymentId') != deployment['uid'] or alias.get('projectId') != PROJECT:
                     raise ValueError('Production alias currently points to another deployment')
                 return {'deployment_id': deployment['uid'], 'commit': sha, 'state': 'READY'}

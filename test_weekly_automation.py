@@ -21,7 +21,7 @@ NOW = utc('2026-09-09T12:00:00+00:00')
 def game(season=2026, week=1, day='2026-09-10', time='20:15', away='KC', home='BUF', complete=False):
     return dict(season=season, week=week, game_type='REG', game_id=f'{season}_{week:02}_{away}_{home}',
                 gameday=day, gametime=time, away_team=away, home_team=home,
-                away_score=20 if complete else None, home_score=24 if complete else None)
+                away_score=20 if complete else None, home_score=24 if complete else None, game_status='Final' if complete else 'Upcoming')
 
 
 def candidate(root, now=NOW, historical=False, base=None):
@@ -81,7 +81,7 @@ class ScheduleTests(unittest.TestCase):
         g2=game(away='SF',home='SEA')
         p=plan_week([g1,g2],NOW)
         self.assertEqual([g['game_id'] for g in p['games']],[g2['game_id']])
-        g1.update(home_score=None,away_score=None)
+        g1.update(home_score=None,away_score=None,game_status="Upcoming")
         self.assertEqual(len(plan_week([g1,g2],NOW)['games']),1)
     def test_offseason_is_idle_not_last_week(self):
         self.assertEqual(plan_week([game()],utc('2026-06-01T12:00:00Z'))['status'],'idle')

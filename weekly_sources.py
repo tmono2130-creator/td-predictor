@@ -57,7 +57,7 @@ class FreshSources:
                 try:
                     raw = self.fetchers[name](season)
                     if name == "pbp" and hasattr(raw, "select") and not isinstance(raw, pd.DataFrame):
-                        raw = raw.select([c for c in PBP_REQUIRED if c in raw.columns])
+                        raw = raw.select([c for c in PBP_REQUIRED | {"desc", "extra_point_attempt", "extra_point_result", "field_goal_attempt", "field_goal_result", "return_touchdown", "two_point_conv_result", "total_home_score", "total_away_score", "epa"} if c in raw.columns])
                     frame = v5.to_pandas(raw)
                     if frame.empty:
                         raise ValueError("source returned no rows")

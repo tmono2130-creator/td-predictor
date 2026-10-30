@@ -62,7 +62,14 @@ def regular_games(records, min_season=None, max_season=None):
             # Later weeks can legitimately retain TBD kickoff times. Preserve the
             # unknown value; never manufacture a kickoff for them.
             game["kickoff_utc"] = None
-        game["complete"] = present(game.get("home_score")) and present(game.get("away_score"))
+        scores = present(game.get("home_score")) and present(game.get("away_score"))
+        state = str(game.get("game_status", "")).strip().lower()
+        evidence = game.get("completion_evidence")
+        final = state in {"final", "completed"} or (isinstance(evidence, dict) and evidence.get("kind") == "pbp_end_game")
+        if final and (not scores or any(float(game[k]) < 0 or not float(game[k]).is_integer() for k in ("home_score", "away_score"))):
+            raise ValueError("Verified final state lacks valid final scores")
+        game["complete"] = bool(final and scores)
+        game["completion_state"] = "verified_final" if game["complete"] else "unverified_result" if scores else "not_final"
         games.append(game)
     if not games:
         raise ValueError("Schedule contains no regular-season games")

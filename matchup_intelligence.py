@@ -205,13 +205,18 @@ def designation(player, offense, defense, league, cutoff_known):
     return "Neutral", ["Evidence meets sample thresholds without a material favorable or unfavorable rate gap"], dp, lp
 
 
-def build_intelligence(board, schedule, pbp, info, weekly_rosters, known, cutoff, generated_at=None, source_as_of=None, snaps=None):
+def build_intelligence(board, schedule, pbp, info, weekly_rosters, known, cutoff, generated_at=None, source_as_of=None, snaps=None, target_ids=None):
     """Pure calculation. Never scores V5 or mutates any supplied frame/board."""
     cutoff = utc(cutoff)
     generated = utc(generated_at or datetime.now(timezone.utc))
     meta = board["meta"]
     season, week = meta["season"], meta["week"]
     games = [g for g in regular_games(schedule, min_season=season, max_season=season) if g["week"] == week]
+    if target_ids is not None:
+        expected = {g["game_id"] for g in games if not g["complete"] and kickoff(g) > cutoff}
+        if set(target_ids) != expected or len(target_ids) != len(expected):
+            raise ValueError("Remaining-game target differs from schedule")
+        games = [g for g in games if g["game_id"] in expected]
     if not games or len({g["game_id"] for g in games}) != len(games) or {g["game_id"] for g in games} != {g["game_id"] for g in meta["games"]}:
         raise ValueError("Board and target schedule differ")
     earliest = min(kickoff(g) for g in games)

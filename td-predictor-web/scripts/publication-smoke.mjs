@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const base = process.env.BASE_URL;
-if (!base || !/^https:\/\/td-predictor\.vercel\.app$|^http:\/\/localhost:\d+$/.test(base)) {
+if (!base || !/^https:\/\/onopm\.space$|^http:\/\/localhost:\d+$/.test(base)) {
   throw new Error('An explicit approved production or localhost URL is required');
 }
 const root = new URL('../public/data/', import.meta.url);

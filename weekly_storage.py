@@ -126,6 +126,9 @@ def validate_candidate(candidate, now=None, allow_historical=False):
     for source in receipt["source_metadata"].values():
         if isinstance(source, dict) and "retrieved_at_utc" in source and utc(source["retrieved_at_utc"]) > generated:
             raise ValueError("Source retrieval occurred after prediction time")
+    if 'input_capture' in receipt:
+        from weekly_capture import validate_envelope
+        validate_envelope(board, receipt, now)
     expected = receipt["scheduled_games"]
     ids = {g["game_id"] for g in expected}
     if len(ids) != len(expected) or ids != {g["game_id"] for g in meta["games"]}:

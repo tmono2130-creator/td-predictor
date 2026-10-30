@@ -33,6 +33,8 @@ def main(argv=None):
             cmd.add_argument("--due-only", action="store_true")
         else:
             cmd.add_argument("--candidate", type=Path, help="New directory; existing candidates are never overwritten")
+            cmd.add_argument("--capture", type=Path, help="New immutable input capture directory")
+            cmd.add_argument("--features", choices=("core", "game", "matchup", "all"), default="core")
     cmd = commands.add_parser("validate")
     cmd.add_argument("--data", type=Path, default=DEFAULT_DATA)
     cmd.add_argument("--candidate", type=Path)
@@ -61,6 +63,18 @@ def main(argv=None):
         relative = publish_candidate(args.candidate, args.data, allow_historical=args.allow_historical)
         print(json.dumps({"published_directory": relative, "data_root": str(args.data)}))
         return 0
+    if args.command == "generate":
+        from weekly_data import main as captured_main
+        run_id = utc_now().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+        candidate = args.candidate or Path("work") / "weekly-candidates" / run_id
+        captures = args.capture or Path("work") / "weekly-inputs" / run_id
+        options = ["capture-generate", "--capture", str(captures), "--candidate", str(candidate),
+                   "--data", str(args.data), "--features", args.features]
+        if args.season is not None or args.week is not None:
+            if args.season is None or args.week is None:
+                raise ValueError("Supply both season and week")
+            options += ["--season", str(args.season), "--week", str(args.week)]
+        return captured_main(options)
     records = retrieve_schedule()
     plan = plan_week(records, season=args.season, week=args.week, historical=args.command == "historical")
     if args.command == "plan":
