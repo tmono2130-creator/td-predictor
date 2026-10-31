@@ -2,16 +2,18 @@
 import {createRequire} from 'node:module';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {latestGeneratedWeek} from '../lib/week-selection.ts';
 const {chromium}=createRequire(import.meta.url)('playwright');
 const base=process.env.BASE_URL||'http://localhost:3138';
 const manifest=JSON.parse(fs.readFileSync('public/data/manifest.json','utf8'));
-const season=Object.keys(manifest.seasons).sort().at(-1),weeks=Object.keys(manifest.seasons[season].weeks),week=weeks.map(Number).sort((a,b)=>a-b).at(-1);
+const season=Object.keys(manifest.seasons).sort().at(-1),weeks=Object.keys(manifest.seasons[season].weeks),week=latestGeneratedWeek(manifest.seasons[season].weeks,manifest.supported_weeks[0] ?? 1);
 const board=JSON.parse(fs.readFileSync('public/data/'+manifest.seasons[season].weeks[week].board,'utf8'));
 const teams=[...new Set(board.rows.map(r=>r.team))].sort().slice(0,3);
 const browser=await chromium.launch({channel:'chrome',headless:true});
 try{
  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(base);await page.getByText('Leading TD estimates',{exact:true}).waitFor();
+ assert.equal(await page.getByLabel('Week',{exact:true}).inputValue(),String(week));
  const nav=label=>page.getByRole('navigation').getByRole('button',{name:label,exact:true}).click();
  await nav('Player Rankings');await page.getByLabel('Rows',{exact:true}).selectOption('1000');
  await page.locator('summary').filter({hasText:'Teams ·'}).click();
