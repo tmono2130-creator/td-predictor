@@ -12,6 +12,7 @@ from weekly_pipeline import verify_current_schedule
 from weekly_schedule import retrieve_schedule, utc_now
 from weekly_storage import DEFAULT_DATA, publish_candidate, validate_candidate, candidate_files
 from game_projection_artifact import HASH as GAME_HASH
+from matchup_publication import HASH_KEY as MATCHUP_HASH
 
 
 def git(*args):
@@ -26,6 +27,24 @@ def git(*args):
 
 def game_publication_allowed(receipt, enabled):
     return GAME_HASH not in receipt or enabled == "true"
+
+
+def validate_requested_bundle(receipt, features):
+    """A requested full product must never silently degrade to a core proposal."""
+    if features not in {'core', 'all'}:
+        raise ValueError('Unsupported reviewed feature selection')
+    sidecars = {key for key in (GAME_HASH, MATCHUP_HASH) if key in receipt}
+    if features == 'core':
+        if sidecars:
+            raise ValueError('Core-only request contains unexpected sidecars')
+        return
+    status = receipt.get('bundle_status', {})
+    if (sidecars != {GAME_HASH, MATCHUP_HASH} or not receipt.get('input_capture')
+            or status.get('core') != 'complete' or status.get('three_features') is not True
+            or set(status.get('requested', [])) != {'game', 'matchup'}
+            or set(status.get('available', [])) != {'core', 'game', 'matchup'}
+            or status.get('unavailable') != {}):
+        raise ValueError('All-feature proposal requires a complete captured three-feature bundle')
 
 
 def publication_allowed(event, ref, enabled, requested):
@@ -76,8 +95,11 @@ def create_data_pr(candidate, expected_head, run_id, attempt, root=DEFAULT_DATA)
     if git('ls-remote', 'origin', 'refs/heads/nfl-pm/publication/*'):
         raise ValueError('Publication branch exists; inspect its PR outcome before cleanup')
     board, _, receipt = validate_candidate(candidate)
+    validate_requested_bundle(receipt, os.environ.get('FEATURES_REQUESTED', 'core'))
     if not game_publication_allowed(receipt, os.environ.get("NFL_PM_GAME_PREDICTOR_ENABLED")):
         raise ValueError("Game Predictor publication is inactive pending separate release approval")
+    if MATCHUP_HASH in receipt and os.environ.get('NFL_PM_MATCHUP_INTELLIGENCE_ENABLED') != 'true':
+        raise ValueError('Matchup Intelligence publication is inactive pending separate release approval')
     fresh(board, receipt, utc_now())
     records = retrieve_schedule()
     verify_current_schedule(board, records)
