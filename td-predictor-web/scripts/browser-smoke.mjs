@@ -5,6 +5,7 @@ const { chromium } = loadPackage('playwright');
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { latestGeneratedWeek } from '../lib/week-selection.ts';
 (async () => {
  const browser = await chromium.launch({channel:'chrome', headless:true});
  const page = await browser.newPage({viewport:{width:1440,height:1000}});
@@ -12,7 +13,7 @@ import path from 'node:path';
  const base=process.env.BASE_URL || 'http://localhost:3104';
  const manifest=JSON.parse(fs.readFileSync('public/data/manifest.json','utf8'));
  const season=Object.keys(manifest.seasons).sort().at(-1);
- const week=Object.keys(manifest.seasons[season].weeks).map(Number).sort((a,b)=>a-b).at(-1);
+ const week=latestGeneratedWeek(manifest.seasons[season].weeks,manifest.supported_weeks[0] ?? 1);
  const board=JSON.parse(fs.readFileSync(path.join('public/data',manifest.seasons[season].weeks[week].board),'utf8'));
  const eligible=board.rows.filter(r=>r.game_status==='Upcoming').sort((a,b)=>b.td_estimate-a.td_estimate);
  const nav=label=>page.getByRole('navigation').getByRole('button',{name:label,exact:true}).click();
@@ -43,7 +44,7 @@ import path from 'node:path';
  await nav('Game Breakdown');
  await check('breakdown matchup and team switch',async()=>{await page.getByLabel('Game',{exact:true}).waitFor();const options=await page.getByLabel('Game',{exact:true}).locator('option').all();assert(options.length>0);if(options.length>1)await page.getByLabel('Game',{exact:true}).selectOption({index:1});const teams=page.getByRole('group',{name:'Team',exact:true}).getByRole('button');await teams.nth(1).click();assert.equal(await teams.nth(1).getAttribute('aria-pressed'),'true')});
  await check('snapshots retain TD Breakdown and truthful optional intelligence states',async()=>{
-  for(const label of ['Offensive Identity','Defensive Vulnerabilities','TD Recommendations']){await page.getByRole('group',{name:'Game Breakdown sections'}).getByRole('button',{name:label,exact:true}).click();if(manifest.seasons[season].weeks[week].matchup_intelligence){await page.getByRole('region',{name:label==='TD Recommendations'?'Matchup-Based TD Recommendations':label,exact:true}).waitFor();assert.equal(await page.getByRole('alert').count(),0);}else{await page.getByText('Matchup Intelligence has not been published for this snapshot.',{exact:false}).waitFor();}}
+  for(const label of ['Offensive Identity','Defensive Vulnerabilities','TD Recommendations']){await page.getByRole('group',{name:'Game Breakdown sections'}).getByRole('button',{name:label,exact:true}).click();if(manifest.seasons[season].weeks[week].matchup_intelligence){await page.getByRole('region',{name:label==='TD Recommendations'?'Matchup-Based TD Recommendations':label,exact:true}).waitFor();assert.deepEqual(await page.getByRole('alert').evaluateAll(nodes=>nodes.filter(node=>node.id!=='__next-route-announcer__').map(node=>node.textContent)),[],'Published intelligence must render without application alerts');}else{await page.getByText('Matchup Intelligence has not been published for this snapshot.',{exact:false}).waitFor();}}
   await page.getByRole('button',{name:'TD Breakdown',exact:true}).click();await page.getByText('Team scoring profile',{exact:true}).waitFor();
  });
  await check('missing week never displays stale predictions',async()=>{await page.getByLabel('Week',{exact:true}).selectOption('1');await page.getByText('have not been generated yet.',{exact:false}).waitFor();assert.equal(await page.getByText('GENERATED SNAPSHOT',{exact:false}).count(),0);await page.getByLabel('Week',{exact:true}).selectOption(String(week));await page.getByLabel('Game',{exact:true}).waitFor()});
