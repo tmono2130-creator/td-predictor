@@ -5,13 +5,12 @@ import {TEAM_NAMES} from "../lib/data";
 import {decodeGameArtifact,validateGameArtifact,gameFreshness,type GameArtifact} from "../lib/game-projection";
 import {DataTable} from "./shared";
 import styles from "../app/page.module.css";
-const subscribe=(fn:()=>void)=>{const id=setInterval(fn,1000);return()=>clearInterval(id);};
-const now=()=>Math.floor(Date.now()/1000)*1000;
+import { subscribeClock, clockSnapshot, serverClockSnapshot } from "../lib/clock";
 export default function GamePredictor({season,week,games,url,pin}:{season:number;week:number;games:ScheduledGame[];url:string|null;pin:string|null}){
  const [selected,setSelected]=useState("");const [method,setMethod]=useState("baseline");
  const key=url&&pin?url+":"+pin:null;
  const [state,setState]=useState<{key:string|null;value:unknown;error:string|null}>({key:null,value:null,error:null});
- const clock=useSyncExternalStore(subscribe,now,()=>0);
+ const clock=useSyncExternalStore(subscribeClock,clockSnapshot,serverClockSnapshot);
  useEffect(()=>{if(!url||!pin)return;const abort=new AbortController();fetch(url,{signal:abort.signal,cache:"no-store"}).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.arrayBuffer();}).then(b=>decodeGameArtifact(b,pin)).then(value=>{if(!abort.signal.aborted)setState({key,value,error:null});}).catch((e:unknown)=>{if(!abort.signal.aborted)setState({key,value:null,error:e instanceof Error?e.message:String(e)});});return()=>abort.abort();},[url,pin,key]);
  const active=games.find(g=>g.game_id===selected)??games[0];
  const validation=state.key===key&&state.value?validateGameArtifact(state.value,games,season,week):null;

@@ -94,6 +94,13 @@ class SnapshotMetadataTests(unittest.TestCase):
     def test_snapshot_preserves_timing_model_source_and_probability_semantics(self):
         import pandas as pd
         from data_schema import validate_board
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        class PregameClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 30, 12, tzinfo=timezone.utc).astimezone(tz)
 
         scored = pd.DataFrame([{
             "player_id": "p1", "game_id": "2026_08_KC_BUF", "player": "Test Player",
@@ -106,7 +113,9 @@ class SnapshotMetadataTests(unittest.TestCase):
             "home_team": "BUF", "away_team": "KC", "gameday": "2026-10-30",
             "gametime": "20:15", "home_score": None, "away_score": None,
         }])
-        board = board_payload(scored, 2026, 8, "composite", [], schedule)
+        # This regression verifies pregame semantics, independent of the real wall clock.
+        with patch('export_json.datetime', PregameClock):
+            board = board_payload(scored, 2026, 8, "composite", [], schedule)
         validate_board(board, 2026, 8)
         self.assertTrue(board["meta"]["model_version"].startswith("composite-sha256:"))
         self.assertIn("nflreadpy", board["meta"]["source_versions"])

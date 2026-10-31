@@ -11,6 +11,7 @@ import BreakdownTab from "../components/game-breakdown";
 import GamePredictor from "../components/game-predictor";
 import Overview from "../components/overview";
 import SnapshotFreshness from "../components/snapshot-freshness";
+import { latestGeneratedWeek } from "../lib/week-selection";
 const TABS: { id: SectionId; label: string; accessible: string }[] = [
  { id: "dashboard", label: "Dashboard", accessible: "Dashboard" },
  { id: "rankings", label: "TD Rankings", accessible: "Player Rankings" },
@@ -24,9 +25,9 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
   const [selectedSeason, setSelectedSeason] = useState(String(seasonOptions[0] ?? ""));
   const season = seasonOptions.includes(Number(selectedSeason)) ? Number(selectedSeason) : (seasonOptions[0] ?? 0);
   const selectedSeasonData = manifest.seasons[String(season)];
-  const generatedWeeks = Object.keys(selectedSeasonData?.weeks ?? {}).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
-  const [selectedWeek, setSelectedWeek] = useState(String(generatedWeeks.at(-1) ?? manifest.supported_weeks[0] ?? 1));
-  const week = Number(selectedWeek || generatedWeeks.at(-1) || manifest.supported_weeks[0] || 1);
+  const defaultWeek = latestGeneratedWeek(selectedSeasonData?.weeks, manifest.supported_weeks[0] ?? 1);
+  const [selectedWeek, setSelectedWeek] = useState(String(defaultWeek));
+  const week = Number(selectedWeek || defaultWeek);
   const entry = selectedSeasonData?.weeks[String(week)];
   const boardUrl = entry?.board ? `/data/${entry.board}` : null;
   const breakdownsUrl = entry?.breakdowns ? `/data/${entry.breakdowns}` : null;
@@ -62,9 +63,8 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
             <label className={styles.pill}>Season{" "}
               <select className={styles.select} aria-label="Season" value={String(season)} onChange={(e) => {
                 const nextSeason = Number(e.target.value);
-                const nextWeeks = Object.keys(manifest.seasons[String(nextSeason)]?.weeks ?? {}).map(Number).sort((a, b) => a - b);
                 setSelectedSeason(e.target.value);
-                setSelectedWeek(String(nextWeeks.at(-1) ?? manifest.supported_weeks[0] ?? 1));
+                setSelectedWeek(String(latestGeneratedWeek(manifest.seasons[String(nextSeason)]?.weeks, manifest.supported_weeks[0] ?? 1)));
               }}>
                 {seasonOptions.map((year) => <option key={year} value={year}>{year}</option>)}
               </select>

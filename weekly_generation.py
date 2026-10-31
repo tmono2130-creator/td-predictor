@@ -83,7 +83,14 @@ def generate_candidate(plan, schedule_records, sources, destination, data_root, 
     scheduled_teams = {g[t] for g in plan['games'] for t in ('home_team', 'away_team')}
     roster = sources.rosters(plan["season"], plan["week"], plan["historical"], teams=scheduled_teams)
     histories, pbp = sources.history(schedule_records, plan["season"], plan["week"], source_cutoff)
-    injuries = sources.injuries(plan["season"], plan["week"], source_cutoff, plan["historical"])
+    injuries = sources.injuries(plan["season"], plan["week"], source_cutoff, plan["historical"], roster)
+    known_injury_ids = set(injuries.loc[injuries.injury_status.ne("Unknown"), "player_id"])
+    sources.metadata["injury_coverage"] = {
+        "eligible_players": len(roster), "known_designations": len(known_injury_ids),
+        "unknown_players": len(roster) - len(known_injury_ids),
+        "unknown_is_not_active": True,
+        "limitation": "Missing final designations are Unknown; roster membership and practice participation do not establish game-day activation",
+    }
     scored = score_v5(roster, histories, pbp, injuries, plan)
     schedule = pd.DataFrame(schedule_records)
     schedule["season"] = pd.to_numeric(schedule.season)

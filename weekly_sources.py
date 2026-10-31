@@ -136,7 +136,7 @@ class FreshSources:
             raise ValueError("No prior play-by-play available")
         return by_season, pd.concat(pbps, ignore_index=True)
 
-    def injuries(self, season, week, cutoff, historical=False):
+    def injuries(self, season, week, cutoff, historical=False, roster=None):
         empty = pd.DataFrame(columns=["player_id", "injury_status"])
         empty.attrs["week_report_available"] = False
         if historical:
@@ -145,21 +145,37 @@ class FreshSources:
         if raw.empty or "week" not in raw:
             return empty
         raw = raw[pd.to_numeric(raw.week, errors="coerce").eq(week)].copy()
+        if "season" in raw:
+            raw = raw[pd.to_numeric(raw.season, errors="coerce").eq(season)].copy()
         if "season_type" in raw:
             raw = raw[raw.season_type.astype(str).str.upper().eq("REG")]
-        # A source retrieved during this live run is pregame information. If an
-        # explicit source update time exists, reject updates later than retrieval cutoff.
-        if "date_modified" in raw:
-            modified = pd.to_datetime(raw.date_modified, errors="coerce", utc=True)
-            raw = raw[modified.isna() | (modified <= utc(cutoff))].copy()
-            raw["_modified"] = modified.loc[raw.index]
-            raw = raw.sort_values("_modified")
         id_col = next((c for c in ("gsis_id", "player_id", "nfl_id") if c in raw), None)
         status_col = next((c for c in ("report_status", "game_status", "status") if c in raw), None)
         if not id_col or not status_col:
             return empty
+        if roster is not None and not raw.empty:
+            # A traded player's old-team report must not follow their ID onto a new team.
+            if "team" not in raw:
+                raise ValueError("Target-player injury reports require team identity")
+            membership = set(zip(roster.player_id, roster.team))
+            raw = raw[[pair in membership for pair in zip(raw[id_col], raw.team)]].copy()
+        # A source retrieved during this live run is pregame information. If an
+        # explicit source update time exists, reject updates later than retrieval cutoff.
+        if "date_modified" in raw:
+            modified = pd.to_datetime(raw.date_modified, errors="coerce", utc=True)
+            if (raw.date_modified.notna() & modified.isna()).any():
+                raise ValueError("Malformed injury source modification timestamp")
+            raw = raw[modified.isna() | (modified <= utc(cutoff))].copy()
+            raw["_modified"] = modified.loc[raw.index]
+            raw = raw.sort_values("_modified")
         result = raw[[id_col, status_col]].rename(columns={id_col: "player_id", status_col: "injury_status"})
         result["injury_status"] = result.injury_status.map(v5.normalize_injury_status)
+        # With no ordering evidence, conflicting reports cannot be silently resolved by file order.
+        for player_id, group in result.groupby("player_id"):
+            if group.injury_status.nunique() > 1:
+                times = raw.loc[group.index, "_modified"] if "_modified" in raw else pd.Series(dtype="datetime64[ns, UTC]")
+                if times.empty or times.isna().any() or group.loc[times.eq(times.max()), "injury_status"].nunique() > 1:
+                    raise ValueError("Conflicting injury designations without unambiguous modification evidence")
         result = result.dropna(subset=["player_id"]).drop_duplicates("player_id", keep="last")
-        result.attrs["week_report_available"] = not result.empty
+        result.attrs["week_report_available"] = bool(result.injury_status.ne("Unknown").any())
         return result

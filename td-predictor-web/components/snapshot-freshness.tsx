@@ -3,16 +3,10 @@ import { useSyncExternalStore } from "react";
 import type { BoardMeta } from "../lib/types";
 import { snapshotFreshness } from "../lib/format";
 import styles from "../app/page.module.css";
-
-const subscribe = (notify: () => void) => {
-  const timer = window.setInterval(notify, 60_000);
-  return () => window.clearInterval(timer);
-};
-const getMinute = () => Math.floor(Date.now() / 60_000) * 60_000;
-const getServerMinute = () => 0;
+import { subscribeClock, clockSnapshot, serverClockSnapshot } from "../lib/clock";
 
 export default function SnapshotFreshness({ meta }: { meta: BoardMeta }) {
-  const now = useSyncExternalStore(subscribe, getMinute, getServerMinute);
+  const now = useSyncExternalStore(subscribeClock, clockSnapshot, serverClockSnapshot);
   const classification = meta.snapshot_classification === "pregame_snapshot" ? "Pregame snapshot" :
     meta.snapshot_classification === "historical_backfill" ? "Historical backfill" :
     meta.snapshot_classification === "mixed_pregame_and_historical" ? "Mixed pregame / historical" : "Classification unavailable";
