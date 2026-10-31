@@ -97,7 +97,9 @@ jobs:
         run: python -m ruff check --select F weekly_capture.py weekly_data.py validation_tools.py artifact_schema.py test_weekly_data.py weekly_pipeline.py weekly_schedule.py weekly_generation.py weekly_sources.py weekly_storage.py roster_eligibility.py matchup_intelligence.py game_projection_artifact.py game_projection_evaluate.py verify_publication.py
       - run: python -m unittest discover -v
       - name: Verify protected source and original production files
-        run: python validation_tools.py --base ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        env:
+          REVIEW_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: python validation_tools.py --base ${{ github.event.pull_request.base.sha || 'origin/main' }} --branch "$REVIEW_BRANCH"
       - name: Prepare isolated synthetic browser fixtures
         run: python validation_tools.py --fixtures "$RUNNER_TEMP/matchup-test-fixtures"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -169,7 +171,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
-      github.event.pull_request.head.ref == 'feature/nfl-pm-weekly-data-pipeline' &&
+      (github.event.pull_request.head.ref == 'feature/nfl-pm-weekly-data-pipeline' ||
+       github.event.pull_request.head.ref == 'feature/nfl-pm-week8-launch') &&
       github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
@@ -187,7 +190,9 @@ jobs:
       - run: python -m pip install -r requirements-automation.txt
       - name: Capture fresh pregame inputs and generate all three features
         run: |
-          python weekly_data.py capture-generate --capture "$RUNNER_TEMP/m9-evidence/inputs" --candidate "$RUNNER_TEMP/m9-evidence/candidate" --features all
+          extra=()
+          if [ "$GITHUB_HEAD_REF" = 'feature/nfl-pm-week8-launch' ]; then extra=(--season 2026 --week 8); fi
+          python weekly_data.py capture-generate --capture "$RUNNER_TEMP/m9-evidence/inputs" --candidate "$RUNNER_TEMP/m9-evidence/candidate" --features all "${extra[@]}"
       - name: Require full coverage and replay exactly from captured bytes
         run: |
           python weekly_data.py replay --capture "$RUNNER_TEMP/m9-evidence/inputs" --candidate "$RUNNER_TEMP/m9-evidence/replay" --features all
@@ -215,9 +220,37 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
               out.write('Fresh unpublished capture; exact byte replay verified. No release action.\n\n```json\n' + json.dumps(result, indent=2) + '\n```\n')
           PY
-      - name: Confirm source and production data unchanged
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: github.head_ref == 'feature/nfl-pm-week8-launch'
+        with:
+          node-version: '24'
+      - name: Build and browser-test the real unpublished Week 8 bundle
+        if: github.head_ref == 'feature/nfl-pm-week8-launch'
+        working-directory: td-predictor-web
+        env:
+          BASE_URL: http://localhost:3159
+          CANDIDATE_DIR: ${{ runner.temp }}/m9-evidence/candidate
+          NODE_PATH: ${{ runner.temp }}/nfl-pm-browser/node_modules
         run: |
-          python validation_tools.py --base ${{ github.event.pull_request.base.sha }}
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build | tee "$RUNNER_TEMP/m9-evidence/linux-build.log"
+          npm install --prefix "$RUNNER_TEMP/nfl-pm-browser" --no-package-lock --no-audit --no-fund playwright@1.58.2
+          "$RUNNER_TEMP/nfl-pm-browser/node_modules/.bin/playwright" install --with-deps chrome
+          npm run start -- --hostname 127.0.0.1 --port 3159 > "$RUNNER_TEMP/m9-evidence/browser-server.log" 2>&1 &
+          WEB_PID=$!
+          trap 'kill "$WEB_PID"' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$BASE_URL" > /dev/null
+          node scripts/weekly-data-smoke.mjs | tee "$RUNNER_TEMP/m9-evidence/real-bundle-browser.log"
+      - name: Confirm source and production data unchanged
+        env:
+          REVIEW_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          python validation_tools.py --base ${{ github.event.pull_request.base.sha }} --branch "$REVIEW_BRANCH"
           git diff --exit-code HEAD
       - name: Retain immutable hosted evidence, including failure evidence
         if: always()

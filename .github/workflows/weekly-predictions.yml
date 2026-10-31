@@ -119,6 +119,34 @@ jobs:
           validate_requested_bundle(receipt, features)
           raise SystemExit(main(['replay', '--capture', 'work/inputs', '--candidate', 'work/replay', '--features', features]))
           PY
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        if: inputs.features == 'all'
+        with:
+          node-version: '24'
+      - name: Browser-check the exact unpublished all-feature proposal
+        if: inputs.features == 'all'
+        working-directory: td-predictor-web
+        env:
+          BASE_URL: http://localhost:3159
+          CANDIDATE_DIR: ${{ github.workspace }}/work/candidate
+          NODE_PATH: ${{ runner.temp }}/nfl-pm-browser/node_modules
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run build
+          npm install --prefix "$RUNNER_TEMP/nfl-pm-browser" --no-package-lock --no-audit --no-fund playwright@1.58.2
+          "$RUNNER_TEMP/nfl-pm-browser/node_modules/.bin/playwright" install --with-deps chrome
+          npm run start -- --hostname 127.0.0.1 --port 3159 > "$RUNNER_TEMP/weekly-browser-server.log" 2>&1 &
+          WEB_PID=$!
+          trap 'kill "$WEB_PID"' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$BASE_URL" > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail --silent "$BASE_URL" > /dev/null
+          node scripts/weekly-data-smoke.mjs
+      - name: Recheck real freshness after browser validation
+        run: python weekly_pipeline.py validate --candidate work/candidate
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

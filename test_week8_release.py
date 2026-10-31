@@ -23,6 +23,22 @@ def complete_receipt():
 
 
 class LaunchGateTests(unittest.TestCase):
+    def test_real_bundle_browser_runs_before_proposal_and_ci_stays_read_only(self):
+        workflow = yaml.load(Path('.github/workflows/weekly-predictions.yml').read_text(), Loader=yaml.BaseLoader)
+        steps = workflow['jobs']['generate']['steps']
+        browser = next(i for i, step in enumerate(steps) if 'node scripts/weekly-data-smoke.mjs' in step.get('run', ''))
+        self.assertEqual(steps[browser]['if'], "inputs.features == 'all'")
+        self.assertTrue(any('validate --candidate' in step.get('run', '') for step in steps[browser+1:]))
+        self.assertNotIn('environment', workflow['jobs']['generate'])
+        ci = yaml.load(Path('.github/workflows/reviewed-data-checks.yml').read_text(), Loader=yaml.BaseLoader)
+        capture = ci['jobs']['hosted-capture']
+        self.assertEqual(capture['permissions'], {'contents': 'read'})
+        self.assertIn('feature/nfl-pm-week8-launch', capture['if'])
+        self.assertIn("github.event.action == 'opened'", capture['if'])
+        self.assertNotIn('environment', capture)
+        self.assertTrue(any('node scripts/weekly-data-smoke.mjs' in s.get('run', '') for s in capture['steps']))
+        self.assertTrue(any('--season 2026 --week 8' in s.get('run', '') for s in capture['steps']))
+
     def test_full_bundle_and_core_selection_are_explicit(self):
         publisher.validate_requested_bundle({}, 'core')
         publisher.validate_requested_bundle(complete_receipt(), 'all')

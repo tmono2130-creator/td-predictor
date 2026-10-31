@@ -5,10 +5,8 @@ import { decodeMatchup, matchupFreshness, matchupValidationError, type MatchupAr
 import { formatPercent, formatTimestamp } from "../lib/format";
 import { DataTable } from "./shared";
 import styles from "../app/page.module.css";
+import { subscribeClock, clockSnapshot, serverClockSnapshot } from "../lib/clock";
 export type IntelligenceView = "offense"|"defense"|"recommendations";
-const subscribe=(notify:()=>void)=>{const timer=window.setInterval(notify,60000);return()=>window.clearInterval(timer);};
-const minute=()=>Math.floor(Date.now()/60000)*60000;
-const serverMinute=()=>0;
 const percent=(value:number|null)=>value===null?"Unavailable":formatPercent(value*100);
 const decimal=(value:number|null)=>value===null?"Unavailable":value.toFixed(2);
 
@@ -45,7 +43,7 @@ function tendencyRows(recent:Sample,season:Sample,trend:Sample,defense=false):Ta
 
 export default function MatchupIntelligence({view,url,hash,board,rows,gameId,team,onTeamChange}:{view:IntelligenceView;url:string|null;hash:string|null;board:BoardMeta;rows:BoardRow[];gameId:string;team:string;onTeamChange:(team:string)=>void}){
  const {data,error,loading}=useArtifact(url,hash);
- const now=useSyncExternalStore(subscribe,minute,serverMinute);
+ const now=useSyncExternalStore(subscribeClock,clockSnapshot,serverClockSnapshot);
  const title=view==="offense"?"Offensive Identity":view==="defense"?"Defensive Vulnerabilities":"Matchup-Based TD Recommendations";
  if(!url||!hash)return <section className={styles.intelligencePanel}><h3>{title}</h3><div role="status" className={`${styles.notice} ${styles.noticeInfo}`}>Matchup Intelligence has not been published for this snapshot. Existing TD Breakdown remains available. No matchup recommendation can be made without a validated artifact.</div></section>;
  if(loading)return <div role="status" className={styles.loading}><span className={styles.spinner}/>Loading verified matchup analysis…</div>;
