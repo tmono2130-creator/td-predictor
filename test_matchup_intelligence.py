@@ -31,7 +31,7 @@ def fixture():
         for away, home in (("SF", "WAS"), ("KC", "BUF")):
             gid = f"2024_{week:02d}_{away}_{home}"
             schedule.append(dict(game_id=gid, season=2024, week=week, game_type="REG", gameday=day, gametime="13:00",
-                                 home_team=home, away_team=away, home_score=20 if week<9 else None, away_score=21 if week<9 else None))
+                                 home_team=home, away_team=away, home_score=20 if week<9 else None, away_score=21 if week<9 else None, game_status="Final" if week<9 else "Upcoming"))
             for team, opponent in ((away,home),(home,away)):
                 if week == 9:
                     for r in by_team[team]:

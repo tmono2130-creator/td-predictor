@@ -9,7 +9,7 @@ from data_schema import TEAM_CODES
 SKILL_POSITIONS = {'QB', 'RB', 'FB', 'WR', 'TE'}
 NON_SKILL_POSITIONS = {'C','G','T','OL','OG','OT','LS','DE','DT','DL','NT','LB','ILB','OLB','MLB',
                        'DB','CB','S','FS','SS','SAF','EDGE','K','P'}
-EXCLUDED_STATUSES = {'CUT', 'RET', 'RES', 'DEV'}
+EXCLUDED_STATUSES = {'CUT', 'RET', 'RES', 'DEV', 'TRD'}
 STABLE_IDS = ('pfr_id', 'espn_id', 'sleeper_id', 'sportradar_id')
 GSIS = re.compile(r'00-\d{7}\Z')
 

@@ -89,12 +89,20 @@ jobs:
           python - <<'PY'
           import os
           from weekly_pipeline import main
-          args = ['generate', '--candidate', 'work/candidate']
+          # Keep optional feature publication inactive. Capture inputs for reproducible core proposals.
+          args = ['generate', '--candidate', 'work/candidate', '--capture', 'work/inputs', '--features', 'core']
           if os.environ.get('INPUT_SEASON') or os.environ.get('INPUT_WEEK'):
               args += ['--season', str(int(os.environ['INPUT_SEASON'])), '--week', str(int(os.environ['INPUT_WEEK']))]
           raise SystemExit(main(args))
           PY
       - run: python weekly_pipeline.py validate --candidate work/candidate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: weekly-input-capture
+          path: work/inputs/**
+          if-no-files-found: warn
+          retention-days: 30
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: weekly-candidate

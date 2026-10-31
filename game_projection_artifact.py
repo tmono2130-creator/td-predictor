@@ -16,10 +16,14 @@ def require(ok,message):
     if not ok:raise ValueError(message)
 
 
-def build_artifact(team_games,schedule,season,week,cutoff,sources,model=None,generated_at=None):
+def build_artifact(team_games,schedule,season,week,cutoff,sources,model=None,generated_at=None,target_ids=None):
     from game_projection import project_matchup,adjusted,model_fingerprint,VERSION
     cutoff=utc(cutoff);generated=utc(generated_at or datetime.now(timezone.utc))
     target=[g for g in regular_games(schedule,min_season=season,max_season=season) if g["week"]==week]
+    if target_ids is not None:
+        expected = {g["game_id"] for g in target if not g["complete"] and kickoff(g) > cutoff}
+        require(set(target_ids) == expected and len(target_ids) == len(expected), "Remaining-game target differs from schedule")
+        target = [g for g in target if g["game_id"] in expected]
     require(target,"No scheduled matchup exists")
     require(cutoff<=generated and cutoff<min(kickoff(g) for g in target),"Invalid pregame cutoff")
     # A signed aggregate cannot silently omit completed historical games.

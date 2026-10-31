@@ -9,7 +9,8 @@ import pandas as pd
 import nflreadpy
 from nflreadpy.config import update_config
 from game_projection import PBP_COLUMNS,prepare_team_games,training_rows,fit_adjusted,evaluate,model_fingerprint
-from weekly_schedule import retrieve_schedule
+from weekly_schedule import retrieve_schedule, regular_games, present
+from weekly_capture import verified_schedule
 from publication_policy import REPOSITORY
 
 
@@ -21,30 +22,52 @@ def local_output(path):
     return target
 
 
+def verified_evaluation_schedule(schedule, year, frame):
+    """Retrospective inputs still require actual terminal game evidence; never pregame vintage."""
+    rows = [g for g in schedule if int(g['season']) == year]
+    verified = verified_schedule(rows, {year: frame}, datetime.now(timezone.utc))
+    # Preserve the original evaluation population: canceled/unplayed games with no
+    # score were never outcomes. Populated scores now additionally need final proof.
+    required = {g['game_id'] for g in rows if present(g.get('home_score')) or present(g.get('away_score'))}
+    if any(g['game_id'] in required and not g['complete'] for g in regular_games(verified, min_season=year, max_season=year)):
+        raise ValueError('Historical evaluation lacks verified final-state evidence')
+    return verified
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--output",required=True)
     args=parser.parse_args();root=local_output(args.output)
     update_config(cache_mode="off",timeout=90)
     schedule=retrieve_schedule();provenance={"schedule":{"retrieved_at_utc":datetime.now(timezone.utc).isoformat(),"sha256":hashlib.sha256(json.dumps(schedule,sort_keys=True,default=str).encode()).hexdigest()}}
     engine_hash=hashlib.sha256(Path(__file__).with_name("game_projection.py").read_bytes().replace(b"\r\n",b"\n")).hexdigest()
-    frames=[]
+    frames=[]; verified_schedules=[]
     for year in range(2020,2026):
         file=root/f"team-games-{year}.csv"
         if file.exists():
             stamp=json.loads((root/f"source-{year}.json").read_text())
             if stamp.get("engine_sha256")!=engine_hash:raise ValueError("Cached scoring implementation differs; use a new analysis directory")
             if hashlib.sha256(file.read_bytes()).hexdigest()!=stamp["team_games_sha256"]:raise ValueError("Cached analysis input hash mismatch")
+            pbp_file=root/f"pbp-{year}.parquet"
+            if stamp.get('completion_policy')!='pbp-end-game-v1' or not pbp_file.is_file() or hashlib.sha256(pbp_file.read_bytes()).hexdigest()!=stamp.get('pbp_sha256'):
+                raise ValueError('Cached final-state evidence unavailable; use a new analysis directory')
+            frame=pd.read_parquet(pbp_file)
+            verified_schedules.extend(verified_evaluation_schedule(schedule,year,frame))
+            del frame;gc.collect()
             provenance[str(year)]=stamp;frames.append(pd.read_csv(file));continue
-        raw=nflreadpy.load_pbp(seasons=[year]);frame=raw.select(sorted(PBP_COLUMNS)).to_pandas();del raw;gc.collect()
+        raw=nflreadpy.load_pbp(seasons=[year]);frame=raw.select(sorted(PBP_COLUMNS | {'total_home_score','total_away_score'})).to_pandas();del raw;gc.collect()
         provenance[str(year)]={"engine_sha256":engine_hash,"retrieved_at_utc":datetime.now(timezone.utc).isoformat(),"sha256":hashlib.sha256(frame.to_json(orient="split").encode()).hexdigest(),"rows":len(frame)}
         frame.to_parquet(root/f"pbp-{year}.parquet",index=False)
-        games=prepare_team_games([g for g in schedule if int(g["season"])==year],frame)
+        verified=verified_evaluation_schedule(schedule,year,frame)
+        verified_schedules.extend(verified)
+        games=prepare_team_games(verified,frame)
+        provenance[str(year)]['completion_policy']='pbp-end-game-v1'
+        provenance[str(year)]['pbp_sha256']=hashlib.sha256((root/f"pbp-{year}.parquet").read_bytes()).hexdigest()
         games.to_csv(file,index=False)
         provenance[str(year)]["team_games_sha256"]=hashlib.sha256(file.read_bytes()).hexdigest()
         (root/f"source-{year}.json").write_text(json.dumps(provenance[str(year)],indent=2),encoding="utf-8")
         frames.append(games);del frame;gc.collect();print("Prepared real source season",year,flush=True)
     table=pd.concat(frames,ignore_index=True)
-    records=training_rows(table,[g for g in schedule if 2020<=int(g["season"])<=2025])
+    records=training_rows(table,verified_schedules)
     model=fit_adjusted(records,2022)
     validation=evaluate(records,model,2023)
     # Experimental gate uses validation only; a passing experiment cannot change release policy.

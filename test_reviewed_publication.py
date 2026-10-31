@@ -183,7 +183,7 @@ class PublisherTests(unittest.TestCase):
 class DeploymentTests(unittest.TestCase):
     def detail(self, state='READY', sha='a'*40):
         return {'readyState':state,'target':'production','projectId':PROJECT,
-                'meta':{'githubCommitSha':sha},'alias':['td-predictor.vercel.app'], 'deploymentId':'dpl_fixture'}
+                'meta':{'githubCommitSha':sha},'alias':['onopm.space'], 'deploymentId':'dpl_fixture'}
 
     def listing(self,state='READY',sha='a'*40):
         return {'deployments':[{'uid':'dpl_fixture','created':1,'state':state,'target':'production',
@@ -231,7 +231,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_credentials_never_sent_to_production_url(self):
         with self.assertRaisesRegex(ValueError,'only be sent'):
-            read_url('https://td-predictor.vercel.app','secret-fixture')
+            read_url('https://onopm.space','secret-fixture')
 
 
 class WorkflowSafetyTests(unittest.TestCase):

@@ -79,17 +79,23 @@ def generate_candidate(plan, schedule_records, sources, destination, data_root, 
     if plan["status"] != "ready":
         raise ValueError("No scheduled games eligible for generation")
     base_manifest_hash = digest(Path(data_root) / "manifest.json")
-    source_cutoff = clock()
+    source_cutoff = sources.cutoff if hasattr(sources, "cutoff") else clock()
     scheduled_teams = {g[t] for g in plan['games'] for t in ('home_team', 'away_team')}
     roster = sources.rosters(plan["season"], plan["week"], plan["historical"], teams=scheduled_teams)
     histories, pbp = sources.history(schedule_records, plan["season"], plan["week"], source_cutoff)
-    injuries = sources.injuries(plan["season"], plan["week"], clock(), plan["historical"])
+    injuries = sources.injuries(plan["season"], plan["week"], source_cutoff, plan["historical"])
     scored = score_v5(roster, histories, pbp, injuries, plan)
     schedule = pd.DataFrame(schedule_records)
     schedule["season"] = pd.to_numeric(schedule.season)
     schedule["week"] = pd.to_numeric(schedule.week)
     for column in ("home_score", "away_score"):
         schedule[column] = pd.to_numeric(schedule[column], errors="coerce")
+    # Only verified historical finals may enter legacy report windows.
+    if hasattr(sources, 'cutoff'):
+        from weekly_schedule import regular_games
+        verified_ids = {g['game_id'] for g in regular_games(schedule_records, min_season=plan['season'] - 3)
+                        if g['complete'] and kickoff(g) < source_cutoff}
+        schedule.loc[~schedule.game_id.isin(verified_ids), ['home_score', 'away_score']] = None
     reports = build_breakdowns(histories, pbp, schedule, injuries, plan)
     generated = clock()
     if not plan["historical"] and any(generated >= kickoff(g) for g in plan["games"]):
