@@ -21,6 +21,10 @@ on:
         description: 'Create draft data PR (requires opt-in and protected environment; never merges)'
         type: boolean
         default: false
+      diagnostic_only:
+        description: 'Read-only gate report; skips generation and PR creation even if publish is checked'
+        type: boolean
+        default: false
       features:
         description: 'core or complete three-feature bundle; all never falls back to partial data'
         type: choice
@@ -39,6 +43,7 @@ env:
 
 jobs:
   plan:
+    if: inputs.diagnostic_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -164,10 +169,65 @@ jobs:
         if: failure()
         run: echo '::error::Prediction generation/validation failed. No JSON was published. Inspect the failing source or coverage check.'
 
+  publication-gates:
+    name: Read-only publication gate diagnostic
+    needs: generate
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report evaluated gates without production access
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ACTUAL_REF: ${{ github.ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GENERATE_RESULT: ${{ needs.generate.result }}
+          DIAGNOSTIC_ONLY: ${{ inputs.diagnostic_only == true }}
+          GATE_MAIN: ${{ github.ref == 'refs/heads/main' }}
+          GATE_ENABLED: ${{ vars.NFL_PM_PUBLISHING_ENABLED == 'true' }}
+          GATE_PUBLISH: ${{ inputs.publish == true }}
+          GATE_ORIGINAL: ${{ github.ref == 'refs/heads/main' && vars.NFL_PM_PUBLISHING_ENABLED == 'true' && inputs.publish == true }}
+          PUBLISH_VALUE_JSON: ${{ toJSON(inputs.publish) }}
+          EVENT_PUBLISH_JSON: ${{ toJSON(github.event.inputs.publish) }}
+          ENABLED_VALUE_JSON: ${{ toJSON(vars.NFL_PM_PUBLISHING_ENABLED) }}
+          GAME_VALUE_JSON: ${{ toJSON(vars.NFL_PM_GAME_PREDICTOR_ENABLED) }}
+          MATCHUP_VALUE_JSON: ${{ toJSON(vars.NFL_PM_MATCHUP_INTELLIGENCE_ENABLED) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          def observed(key):
+              value = json.loads(os.environ[key])
+              safe = value is None or type(value) is bool or (isinstance(value, str) and value.strip().lower() in ('', 'true', 'false'))
+              return {'type': type(value).__name__, 'value': value if safe else '<non-boolean value redacted>',
+                      'length': len(value) if isinstance(value, str) else None}
+          def gate(key):
+              value = os.environ[key]
+              if value not in ('true', 'false'):
+                  raise ValueError('Invalid evaluated diagnostic gate: ' + key)
+              return value == 'true'
+          result = {
+              'event': os.environ['EVENT_NAME'], 'ref': os.environ['ACTUAL_REF'],
+              'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+              'generation_result': os.environ['GENERATE_RESULT'], 'diagnostic_only': gate('DIAGNOSTIC_ONLY'),
+              'gates': {'main_ref': gate('GATE_MAIN'), 'repository_publishing_flag': gate('GATE_ENABLED'),
+                        'typed_publish_input': gate('GATE_PUBLISH'), 'original_condition': gate('GATE_ORIGINAL')},
+              'observations': {key: observed(key) for key in ('PUBLISH_VALUE_JSON', 'EVENT_PUBLISH_JSON',
+                              'ENABLED_VALUE_JSON', 'GAME_VALUE_JSON', 'MATCHUP_VALUE_JSON')},
+              'scope': 'No production environment: vars observations are repository/organization scope, not environment overrides',
+              'note': 'Diagnostic only. True gates do not constitute publication or merge authorization.'}
+          print(json.dumps(result, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write('### Read-only publication gates\n\n```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          PY
+
   publish:
     name: Propose reviewed data PR
-    needs: generate
+    needs: [generate, publication-gates]
     if: >-
+      inputs.diagnostic_only != true &&
       github.ref == 'refs/heads/main' &&
       vars.NFL_PM_PUBLISHING_ENABLED == 'true' &&
       inputs.publish == true
