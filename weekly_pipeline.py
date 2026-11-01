@@ -5,7 +5,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from weekly_schedule import plan_week, refresh_due, retrieve_schedule, utc_now
+from weekly_schedule import plan_week, refresh_status, retrieve_schedule, utc_now
 from weekly_storage import DEFAULT_DATA, final_forecasts, publish_candidate, validate_candidate, validate_manifest, write_new
 from publication_policy import require_review_checkout
 
@@ -78,9 +78,15 @@ def main(argv=None):
     records = retrieve_schedule()
     plan = plan_week(records, season=args.season, week=args.week, historical=args.command == "historical")
     if args.command == "plan":
-        if args.due_only and plan["status"] == "ready" and not refresh_due(plan, validate_manifest(args.data)):
-            plan["status"] = "idle"
-            plan["reason"] = "Published snapshot is within refresh interval"
+        if args.due_only and plan["status"] == "ready":
+            manifest = validate_manifest(args.data)
+            entry = manifest.get('seasons', {}).get(str(plan['season']), {}).get('weeks', {}).get(str(plan['week']))
+            receipt_path = (args.data / entry['board']).with_name('receipt.json') if entry else None
+            cutoff = json.loads(receipt_path.read_text())['source_cutoff_utc'] if receipt_path and receipt_path.is_file() else None
+            plan['refresh'] = refresh_status(plan, manifest, source_cutoff=cutoff)
+            if not plan['refresh']['due']:
+                plan['status'] = 'idle'
+                plan['reason'] = plan['refresh']['reason']
         if args.output:
             write_new(args.output, plan)
         if os.environ.get("GITHUB_OUTPUT"):

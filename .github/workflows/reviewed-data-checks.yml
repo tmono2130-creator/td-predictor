@@ -31,6 +31,8 @@ env:
 jobs:
   publication-safety:
     name: Publication safety
+    outputs:
+      change_kind: ${{ steps.contract.outputs.kind }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,6 +53,7 @@ jobs:
             python -m pip install -r requirements-automation.txt
           fi
       - name: Verify current base and data-only contract
+        id: contract
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -67,7 +70,12 @@ jobs:
               raise SystemExit('Main advanced: update/regenerate the PR; do not reuse stale checks')
           if Path('reviewed_publication.py').is_file():
               from reviewed_publication import validate_change
-              print(validate_change(Path.cwd(), base, head, os.environ['HEAD_BRANCH']))
+              result = validate_change(Path.cwd(), base, head, os.environ['HEAD_BRANCH'])
+              if result['kind'] not in {'source', 'publication', 'rollback'}:
+                  raise SystemExit('Unknown trusted contract classification')
+              print(result)
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+                  out.write('kind=' + result['kind'] + '\n')
           else:
               # Bootstrap only: installing this validator may never introduce data.
               changed = subprocess.check_output(['git','diff','--name-only',base,head], text=True).splitlines()
@@ -94,7 +102,7 @@ jobs:
       - run: python -m pip install -r requirements-automation.txt
       - run: python -m pip install ruff==0.14.0
       - name: Lint reviewed pipeline source and tests
-        run: python -m ruff check --select F weekly_capture.py weekly_data.py validation_tools.py artifact_schema.py test_weekly_data.py weekly_pipeline.py weekly_schedule.py weekly_generation.py weekly_sources.py weekly_storage.py roster_eligibility.py matchup_intelligence.py game_projection_artifact.py game_projection_evaluate.py verify_publication.py
+        run: python -m ruff check --select F weekly_capture.py weekly_data.py validation_tools.py artifact_schema.py test_weekly_data.py weekly_pipeline.py weekly_schedule.py weekly_generation.py weekly_sources.py weekly_storage.py roster_eligibility.py matchup_intelligence.py game_projection_artifact.py game_projection_evaluate.py verify_publication.py production_health.py test_production_reliability.py
       - run: python -m unittest discover -v
       - name: Verify protected source and original production files
         env:
@@ -147,6 +155,9 @@ jobs:
           BASE_URL: http://localhost:3158
           PLAYWRIGHT_CHANNEL: chrome
           MATCHUP_FIXTURE_DIR: ${{ runner.temp }}/matchup-test-fixtures
+          # Only the trusted-base validator may classify unchanged data as source-only.
+          # Data PRs and post-merge verification retain strict fresh-release checks.
+          CONTENT_HEALTH_ONLY: ${{ needs.publication-safety.outputs.change_kind == 'source' }}
         run: |
           npm run start -- --port 3158 > "$RUNNER_TEMP/nfl-pm-web.log" 2>&1 &
           WEB_PID=$!

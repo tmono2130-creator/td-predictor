@@ -5,8 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { gameFreshness } from '../lib/game-projection.ts';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const base = process.env.BASE_URL;
+const contentHealthOnly = process.env.CONTENT_HEALTH_ONLY === 'true';
+if (contentHealthOnly && !/^http:\/\/localhost:\d+$/.test(base || '')) {
+  throw new Error('Source-only content health mode is restricted to localhost; production release verification stays strict');
+}
 if (!base || !/^https:\/\/onopm\.space$|^http:\/\/localhost:\d+$/.test(base)) {
   throw new Error('An explicit approved production or localhost URL is required');
 }
@@ -70,6 +75,16 @@ try {
               const projection = value.methods.baseline;
               assert.equal(projection.win_probability, null, 'PPP does not establish calibrated win probabilities');
               await panel.getByRole('button', { name: 'PPP Baseline', exact: true }).click();
+              if (contentHealthOnly) {
+                const freshness = gameFreshness(artifact, value, await page.evaluate(() => Date.now()));
+                if (freshness.startsWith('Unavailable')) {
+                  await panel.getByText(freshness, { exact: true }).waitFor();
+                  await panel.getByText('Projection suppressed until fresh pregame sources are available.', { exact: true }).waitFor();
+                  assert.equal(await panel.getByRole('heading', { name: 'Projected final score', exact: false }).count(), 0);
+                  assert.equal(await panel.getByText('Predicted winner:', { exact: false }).count(), 0);
+                  continue;
+                }
+              }
               await panel.getByRole('heading', { name: 'Projected final score · PPP Baseline', exact: true }).waitFor();
               for (const score of Object.values(projection.scores)) {
                 assert(await panel.getByText(score.toFixed(1), { exact: true }).count() > 0);
@@ -108,7 +123,7 @@ try {
     }
   }
   assert.deepEqual(errors, []);
-  console.log('PASS actual served weeks, player coverage, Game Predictor availability or exact PPP values/hashes, Matchup Intelligence, mobile navigation and runtime errors; no intercepted responses');
+  console.log('PASS ' + (contentHealthOnly ? 'SOURCE-ONLY content health (not release approval): ' : 'strict release verification: ') + 'actual served weeks, player coverage, Game Predictor availability or exact PPP values/hashes, Matchup Intelligence, mobile navigation and runtime errors; no intercepted responses');
 } finally {
   await browser.close();
 }
