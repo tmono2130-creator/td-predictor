@@ -27,3 +27,23 @@ for(const [name,change] of [
 ])test('rejects '+name,()=>{const f=fixture();change(f);assert.notEqual(validateGameArtifact(f.value,f.schedule,2026,1),null);});
 test('freshness suppresses stale or near-kickoff forecasts but labels archives',()=>{const f=fixture();assert.match(gameFreshness(f.value,f.g,Date.parse(f.time)),/^Pregame/);assert.match(gameFreshness(f.value,f.g,Date.parse(f.time)+86400000),/stale/);assert.match(gameFreshness(f.value,f.g,Date.parse(f.g.kickoff_utc)-300000),/margin/);f.value.meta.classification='retrospective_analysis';assert.match(gameFreshness(f.value,f.g,Date.parse(f.time)),/^Retrospective/);});
 test('artifact SHA256 must match manifest pin',async()=>{const bytes=new TextEncoder().encode(JSON.stringify(fixture().value));await assert.rejects(()=>decodeGameArtifact(bytes.buffer,'0'.repeat(64)),/hash mismatch/);const pin=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');assert.deepEqual(await decodeGameArtifact(bytes.buffer,pin),fixture().value);});
+
+test('exact kickoff and six-hour freshness boundaries fail closed',()=>{
+ const f=fixture(),start=Date.parse(f.g.kickoff_utc),now=start-6*3600000;
+ f.value.meta.generated_at=new Date(now-1800000+1).toISOString();
+ f.value.meta.data_cutoff=f.value.meta.generated_at;
+ for(const source of Object.values(f.value.meta.sources))source.as_of=f.value.meta.generated_at;
+ assert.equal(gameFreshness(f.value,f.g,now),'Pregame data within freshness window');
+ assert.equal(gameFreshness(f.value,f.g,now+1),'Unavailable — stale source data');
+ assert.equal(gameFreshness(f.value,f.g,start-600000),'Unavailable — kickoff safety margin exhausted');
+ assert.equal(gameFreshness(f.value,f.g,start),'Archived forecast — kickoff has passed');
+});
+
+test('48-hour transition immediately applies the six-hour source limit',()=>{
+ const f=fixture(),start=Date.parse(f.g.kickoff_utc),boundary=start-48*3600000;
+ f.value.meta.generated_at=new Date(boundary-7*3600000).toISOString();
+ f.value.meta.data_cutoff=f.value.meta.generated_at;
+ for(const source of Object.values(f.value.meta.sources))source.as_of=f.value.meta.generated_at;
+ assert.equal(gameFreshness(f.value,f.g,boundary-1),'Pregame data within freshness window');
+ assert.equal(gameFreshness(f.value,f.g,boundary),'Unavailable — stale source data');
+});

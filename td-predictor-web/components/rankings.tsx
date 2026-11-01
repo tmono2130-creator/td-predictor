@@ -168,7 +168,7 @@ export default function RankingsTab({ rows, meta, onAdd, selectedIds }: { rows: 
       )}
       <p className={styles.caption}>
         Showing {shown.length} of {filtered.length}. Est. TD% is the model&apos;s probability that a player scores at
-        least one rushing or receiving TD — calibrated against past seasons, not a sportsbook price. 🆕 = no game
+        least one rushing or receiving TD — a model estimate whose calibration is not established across seasons, not a sportsbook price. 🆕 = no game
         history, so the number reflects team/matchup context only. Injury status is the official report and does
         not reflect gameday inactives.
       </p>

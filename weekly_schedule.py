@@ -137,14 +137,52 @@ def plan_week(records, now=None, season=None, week=None, horizon_days=10, histor
             "games": eligible, "excluded_game_ids": [g["game_id"] for g in selected if g not in eligible]}
 
 
-def refresh_due(plan, manifest, now=None):
-    if plan["status"] != "ready":
-        return False
+RELEASE_HEADROOM = timedelta(minutes=20)
+
+
+def forecast_deadline(timestamp, game_kickoff):
+    """First strict expiry, including future 48h/6h transitions and the 10m gate.
+
+    Planning only: this does not replace any candidate/publication validation.
+    At a boundary the shorter limit applies immediately, even to older captures.
+    """
+    captured, start = utc(timestamp), utc(game_kickoff)
+    return min(captured + timedelta(hours=24),
+               max(captured + timedelta(hours=6), start - timedelta(hours=48)),
+               max(captured + timedelta(minutes=30), start - timedelta(hours=6)),
+               start - timedelta(minutes=10))
+
+
+def refresh_status(plan, manifest, now=None, headroom=RELEASE_HEADROOM, source_cutoff=None):
+    """Budget generation 5m, CI 8m, human approval 5m, deployment 2m by default.
+
+    This is an estimate, not a freshness waiver or assurance of human availability.
+    The manifest has no cutoff: callers with a receipt should supply source_cutoff.
+    """
     now = utc(now or utc_now())
-    entry = manifest.get("seasons", {}).get(str(plan["season"]), {}).get("weeks", {}).get(str(plan["week"]))
+    if not isinstance(headroom, timedelta) or headroom <= timedelta(0):
+        raise ValueError('Positive release headroom required')
+    if plan['status'] != 'ready':
+        return {'due': False, 'can_finish': False, 'reason': 'no_eligible_games'}
+    start = min(kickoff(g) for g in plan['games'])
+    # A new capture must remain valid through the entire supervised release budget.
+    if now + headroom >= forecast_deadline(now, start):
+        return {'due': False, 'can_finish': False, 'reason': 'insufficient_release_headroom'}
+    entry = manifest.get('seasons', {}).get(str(plan['season']), {}).get('weeks', {}).get(str(plan['week']))
     if not entry:
-        return True
-    age = now - utc(entry["generated_at"])
-    remaining = min(kickoff(g) for g in plan["games"]) - now
-    interval = timedelta(minutes=30) if remaining <= timedelta(hours=6) else timedelta(hours=6) if remaining <= timedelta(days=2) else timedelta(days=1)
-    return age >= interval
+        return {'due': True, 'can_finish': True, 'reason': 'not_generated'}
+    stamps = [utc(entry['generated_at'])]
+    if source_cutoff is not None:
+        stamps.append(utc(source_cutoff))
+    if any(stamp > now for stamp in stamps):
+        raise ValueError('Published timestamps are in the future')
+    deadline = min(forecast_deadline(stamp, start) for stamp in stamps)
+    due = now + headroom >= deadline
+    return {'due': due, 'can_finish': True,
+            'reason': 'refresh_before_expiry' if due else 'within_release_budget',
+            'deadline_utc': deadline.isoformat(),
+            'refresh_at_utc': (deadline - headroom).isoformat()}
+
+
+def refresh_due(plan, manifest, now=None):
+    return refresh_status(plan, manifest, now)['due']
