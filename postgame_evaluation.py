@@ -143,26 +143,35 @@ def evaluate(board, gp, mi, receipt, pins, records, pbp, stats, as_of):
         touchdowns, offensive = Counter(), Counter()
         complete_scorers = final and not plays.empty
         for row in plays.to_dict('records'):
-            flag = touchdown_count(row.get('touchdown'))
-            if flag is None:
-                # Administrative events often omit this field. They are not TD evidence.
-                play_type = row.get('play_type')
-                if isinstance(play_type, str) and play_type != 'no_play':
-                    complete_scorers = False
-                if pd.notna(row.get('td_player_id')) or pd.notna(row.get('td_team')):
-                    complete_scorers = False
-                continue
-            if flag not in [0, 1]:
-                complete_scorers = False
-            if flag != 1 or touchdown_count(row.get('two_point_attempt')) == 1:
-                continue
+            fields = ['touchdown', 'rush_touchdown', 'pass_touchdown', 'return_touchdown', 'two_point_attempt']
+            flags = {key: touchdown_count(row.get(key)) for key in fields}
             scorer, team = row.get('td_player_id'), row.get('td_team')
-            if not isinstance(scorer, str) or not GSIS.fullmatch(scorer) or team not in [original['away_team'], original['home_team']]:
+            has_identity = pd.notna(scorer) or pd.notna(team)
+            # Only empty administrative events may omit binary scoring fields.
+            if all(flags[key] == 0 or pd.isna(row.get(key)) for key in fields) and not has_identity and (
+                    pd.isna(row.get('play_type')) or row.get('play_type') == 'no_play'):
+                continue
+            if any(value not in [0, 1] for value in flags.values()):
                 complete_scorers = False
                 continue
+            categories = sum(flags[key] for key in ['rush_touchdown', 'pass_touchdown', 'return_touchdown'])
+            if flags['two_point_attempt'] == 1:
+                # A successful two-point play is not an anytime touchdown. Any
+                # touchdown annotation on it is conflicting evidence, not a TD.
+                if flags['touchdown'] or categories or has_identity:
+                    complete_scorers = False
+                continue
+            if flags['touchdown'] == 0:
+                if categories or has_identity:
+                    complete_scorers = False
+                continue
+            if categories != 1 or not isinstance(scorer, str) or not GSIS.fullmatch(scorer) or team not in [original['away_team'], original['home_team']]:
+                complete_scorers = False
+                continue
+            # This individual scorer event is reliable even if another play in
+            # the game is incomplete. Completeness is required for negatives.
             touchdowns[(scorer, team)] += 1
-            if touchdown_count(row.get('return_touchdown')) == 0 and (
-                    touchdown_count(row.get('rush_touchdown')) == 1 or touchdown_count(row.get('pass_touchdown')) == 1):
+            if flags['return_touchdown'] == 0:
                 offensive[(scorer, team)] += 1
         evidence[gid] = (final, complete_scorers, touchdowns, offensive)
     players = []
@@ -180,11 +189,16 @@ def evaluate(board, gp, mi, receipt, pins, records, pbp, stats, as_of):
                     rush, receiving = touchdown_count(s.get('rushing_tds')), touchdown_count(s.get('receiving_tds'))
                     participated = any((touchdown_count(s.get(k)) or 0) > 0 for k in ['attempts', 'carries', 'targets'])
                     if rush is None or receiving is None:
-                        reason = 'malformed_or_missing_touchdown_evidence'
+                        if scored[(pid, team)] > 0:
+                            actual, reason = True, 'verified_pbp_scorer_with_incomplete_stats'
+                        else:
+                            reason = 'malformed_or_missing_touchdown_evidence'
                     elif rush + receiving != offensive[(pid, team)]:
                         reason = 'stats_pbp_touchdown_conflict'
                     elif complete:
                         actual, reason = scored[(pid, team)] > 0, 'verified_stats_and_complete_pbp'
+                    elif scored[(pid, team)] > 0:
+                        actual, reason = True, 'verified_stats_and_pbp_scorer'
                     else:
                         reason = 'incomplete_game_scorer_evidence'
             elif scored[(pid, team)] > 0:

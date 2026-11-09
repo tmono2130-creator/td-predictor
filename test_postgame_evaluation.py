@@ -88,6 +88,55 @@ class PostgameTests(unittest.TestCase):
         args[7]['passing_tds'] = [0, 3]
         self.assertIs(evaluate(*args)['players'][1]['actual_td'], False)
 
+    def test_contradictory_touchdown_fields_never_confirm_negative(self):
+        for edit in [
+                {'touchdown': 0}, {'touchdown': None}, {'rush_touchdown': 0},
+                {'return_touchdown': 1}, {'two_point_attempt': 1}, {'pass_touchdown': 2},
+                {'td_team': 'KC'}, {'td_player_id': 'invalid'}]:
+            with self.subTest(edit=edit):
+                args = list(fixture())
+                for key, value in edit.items():
+                    args[6].loc[0, key] = value
+                args[7].loc[0, 'rushing_tds'] = 0
+                report = evaluate(*args)
+                self.assertIsNone(report['players'][0]['actual_td'])
+                self.assertIsNone(report['players'][1]['actual_td'])
+
+    def test_reliable_positive_survives_unrelated_conflict_or_missing_stats(self):
+        for missing in [False, True]:
+            args = list(fixture())
+            bad = args[6].iloc[[0]].copy()
+            bad['play_id'], bad['touchdown'] = 3, 0
+            args[6] = pd.concat([args[6], bad], ignore_index=True)
+            if missing:
+                args[7] = args[7].iloc[1:].copy()
+            report = evaluate(*args)
+            self.assertIs(report['players'][0]['actual_td'], True)
+            self.assertIsNone(report['players'][1]['actual_td'])
+        args = list(fixture())
+        args[7].loc[0, 'receiving_tds'] = float('nan')
+        self.assertIs(evaluate(*args)['players'][0]['actual_td'], True)
+
+    def test_conflicting_stat_negative_is_unknown_even_with_scorer_event(self):
+        args = list(fixture())
+        args[7].loc[0, 'rushing_tds'] = 0
+        self.assertIsNone(evaluate(*args)['players'][0]['actual_td'])
+
+    def test_two_point_play_is_not_a_touchdown_and_participation_is_not_inferred(self):
+        args = list(fixture())
+        conversion = args[6].iloc[[0]].copy()
+        for key in ['touchdown', 'rush_touchdown', 'pass_touchdown', 'return_touchdown']:
+            conversion[key] = 0
+        conversion['play_id'], conversion['two_point_attempt'] = 3, 1
+        conversion['td_player_id'], conversion['td_team'] = None, None
+        args[6] = pd.concat([args[6], conversion], ignore_index=True)
+        args[7].loc[1, 'targets'] = 0
+        player = evaluate(*args)['players'][1]
+        self.assertIs(player['actual_td'], False)
+        self.assertFalse(player['participation_verified'])
+        args[7] = args[7].iloc[:1].copy()
+        self.assertIsNone(evaluate(*args)['players'][1]['actual_td'])
+
     def test_snapshot_tampering_rejected_before_evaluation(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as root:
             p = Path(root)

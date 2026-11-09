@@ -14,6 +14,11 @@ const emptyScore={n:0,winner_accuracy:null,team_score_mae:null,total_mae:null,ma
 const emptyTd={n:0,positives:0,brier:null,log_loss:null,auc:null,calibration:[]};
 const gid='2026_09_BUF_MIN';
 const synthetic={schema_version:1,evaluation_id:'a'.repeat(24),season:2026,week:9,status:'partial',evaluated_as_of:'2026-11-09T19:00:00Z',forecast_generated_at:'2026-11-05T20:00:00Z',forecast_hashes:{'board.json':'b'.repeat(64),'receipt.json':'c'.repeat(64)},games_completed:0,games_pending:1,game_metrics:emptyScore,baseline_metrics:emptyScore,td_metrics:emptyTd,position_metrics:{QB:emptyTd},missing_labels:{pending_game:1},limitations:['SYNTHETIC BROWSER FIXTURE ONLY; never production'],games:[{game_id:gid,away_team:'BUF',home_team:'MIN',kickoff_utc:'2026-11-10T01:15:00Z',status:'pending',prediction:{away:22,home:21},actual:null}],players:[{game_id:gid,player_id:'00-0000001',player:'TEST PLAYER ONLY',team:'BUF',position:'QB',estimate_pct:20,actual_td:null,outcome_reason:'pending_game'}]};
+// Structurally complete provenance for isolated synthetic routing only. No source claims.
+synthetic.engine_sha256='f'.repeat(64);
+synthetic.position_metrics={QB:emptyTd,RB:emptyTd,WR:emptyTd,TE:emptyTd};
+synthetic.outcome_sources={kind:'live_capture',git_revision:'e'.repeat(40),code_sha256:{'TEST-ONLY.py':'f'.repeat(64)},dependencies:{python:'TEST-ONLY'},started_at_utc:synthetic.evaluated_as_of,source_cutoff_utc:synthetic.evaluated_as_of,
+ sources:Object.fromEntries(['schedule','stats_2026','pbp_2026'].map(key=>[key,{available:true,path:key+(key==='schedule'?'.csv':'.parquet'),url:'https://example.invalid/TEST-ONLY/'+key,sha256:'d'.repeat(64),bytes:1,started_at_utc:synthetic.evaluated_as_of,retrieved_at_utc:synthetic.evaluated_as_of,provider_modified_utc:null}]))};
 const evaluation=process.env.EVALUATION_FIXTURE_FILE?JSON.parse(fs.readFileSync(process.env.EVALUATION_FIXTURE_FILE,'utf8')):synthetic;
 const bytes=Buffer.from(JSON.stringify(evaluation)),pin=createHash('sha256').update(bytes).digest('hex');
 const index={schema_version:1,reports:[{season:evaluation.season,week:evaluation.week,path:evaluation.evaluation_id+'/evaluation.json',sha256:pin}]};
