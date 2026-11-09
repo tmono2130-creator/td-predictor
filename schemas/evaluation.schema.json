@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NFL PM immutable postgame evaluation v1",
+  "type": "object",
+  "required": ["schema_version", "evaluation_id", "engine_sha256", "season", "week", "status", "evaluated_as_of", "forecast_generated_at", "forecast_hashes", "games_completed", "games_pending", "games", "players", "game_metrics", "baseline_metrics", "td_metrics", "position_metrics", "limitations", "outcome_sources"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evaluation_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+    "engine_sha256": {"$ref": "#/$defs/hash"},
+    "season": {"type": "integer", "minimum": 2002},
+    "week": {"type": "integer", "minimum": 1, "maximum": 18},
+    "status": {"enum": ["partial", "complete"]},
+    "evaluated_as_of": {"type": "string", "format": "date-time"},
+    "forecast_generated_at": {"type": "string", "format": "date-time"},
+    "forecast_hashes": {"type": "object", "required": ["board.json", "receipt.json"], "additionalProperties": {"$ref": "#/$defs/hash"}},
+    "games_completed": {"$ref": "#/$defs/count"}, "games_pending": {"$ref": "#/$defs/count"},
+    "game_metrics": {"$ref": "#/$defs/scoreMetrics"}, "baseline_metrics": {"$ref": "#/$defs/scoreMetrics"},
+    "td_metrics": {"$ref": "#/$defs/tdMetrics"},
+    "position_metrics": {"type": "object", "additionalProperties": {"$ref": "#/$defs/tdMetrics"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "outcome_sources": {"type": "object"},
+    "games": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["game_id", "away_team", "home_team", "kickoff_utc", "status", "prediction", "actual"], "properties": {
+      "game_id": {"type": "string", "pattern": "^[0-9]{4}_[0-9]{2}_[A-Z]+_[A-Z]+$"}, "away_team": {"type": "string"}, "home_team": {"type": "string"},
+      "kickoff_utc": {"type": "string", "format": "date-time"}, "status": {"enum": ["pending", "final"]},
+      "prediction": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/scores"}]},
+      "actual": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/scores"}]}
+    }, "allOf": [{"if": {"properties": {"status": {"const": "pending"}}}, "then": {"properties": {"actual": {"type": "null"}}}, "else": {"properties": {"actual": {"$ref": "#/$defs/scores"}}}}]}},
+    "players": {"type": "array", "items": {"type": "object", "required": ["game_id", "player_id", "player", "team", "position", "estimate_pct", "actual_td", "outcome_reason"], "properties": {
+      "game_id": {"type": "string"}, "player_id": {"type": "string", "pattern": "^00-[0-9]{7}$"}, "player": {"type": "string", "minLength": 1},
+      "team": {"type": "string"}, "position": {"type": "string"}, "estimate_pct": {"type": "number", "minimum": 0, "maximum": 100},
+      "actual_td": {"type": ["boolean", "null"]}, "outcome_reason": {"type": "string"}
+    }}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "count": {"type": "integer", "minimum": 0},
+    "nullableNumber": {"type": ["number", "null"], "minimum": 0},
+    "scores": {"type": "object", "required": ["away", "home"], "properties": {"away": {"type": "number", "minimum": 0}, "home": {"type": "number", "minimum": 0}}, "additionalProperties": false},
+    "scoreMetrics": {"type": "object", "required": ["n", "winner_accuracy", "team_score_mae", "total_mae", "margin_mae"], "properties": {
+      "n": {"$ref": "#/$defs/count"}, "winner_accuracy": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+      "team_score_mae": {"$ref": "#/$defs/nullableNumber"}, "total_mae": {"$ref": "#/$defs/nullableNumber"}, "margin_mae": {"$ref": "#/$defs/nullableNumber"}
+    }},
+    "tdMetrics": {"type": "object", "required": ["n", "positives", "brier", "log_loss", "auc", "calibration"], "properties": {
+      "n": {"$ref": "#/$defs/count"}, "positives": {"$ref": "#/$defs/count"}, "brier": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+      "log_loss": {"$ref": "#/$defs/nullableNumber"}, "auc": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+      "calibration": {"type": "array", "items": {"type": "object", "required": ["lower_pct", "upper_pct", "n", "mean_estimate_pct", "observed_pct"], "properties": {
+        "lower_pct": {"type": "number", "minimum": 0, "maximum": 100}, "upper_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "n": {"type": "integer", "minimum": 1}, "mean_estimate_pct": {"type": "number", "minimum": 0, "maximum": 100}, "observed_pct": {"type": "number", "minimum": 0, "maximum": 100}
+      }}}
+    }}
+  }
+}

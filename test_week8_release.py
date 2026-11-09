@@ -145,6 +145,7 @@ class CapturedReleaseRehearsalTests(unittest.TestCase):
             before = tree(f.repo, f.head)
             with patch('weekly_capture.utc_now', return_value=FIXTURE_NOW+timedelta(seconds=1)), \
                  patch('weekly_data.utc_now', return_value=FIXTURE_NOW+timedelta(seconds=1)), \
+                 patch('weekly_schedule.utc_now', return_value=FIXTURE_NOW+timedelta(seconds=1)), \
                  patch('weekly_storage.utc_now', return_value=FIXTURE_NOW+timedelta(seconds=1)):
                 captures(root/'inputs')
                 result = build_from_capture(root/'inputs', root/'candidate', f.data, 2026, 9)
