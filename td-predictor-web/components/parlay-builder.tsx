@@ -1,18 +1,19 @@
 "use client";
 import { useMemo, useState } from "react";
 import styles from "../app/page.module.css";
-import type { BoardRow } from "../lib/types";
+import type { BoardMeta, BoardRow } from "../lib/types";
+import DiversifiedParlays from "./diversified-parlays";
 import { formatPercent as fmtPct } from "../lib/format";
 import { autoBuildParlay, parlayProbability, VOLATILITY_ORDER, type ParlayResult, type VolatilityBand } from "../lib/parlay";
 import { PlayerPicker, ParlayView } from "./shared";
 const errMessage = (e: unknown) => e instanceof Error ? e.message : String(e);
 
-export default function ParlayTab({ rows, selectedIds, onSelectionChange }: { rows: BoardRow[]; selectedIds: string[]; onSelectionChange: (ids: string[]) => void }) {
+export default function ParlayTab({ rows, meta, selectedIds, onSelectionChange }: { rows: BoardRow[]; meta: BoardMeta; selectedIds: string[]; onSelectionChange: (ids: string[]) => void }) {
   const upcoming = useMemo(
     () => rows.filter((r) => r.game_status === "Upcoming").sort((a, b) => b.td_estimate - a.td_estimate),
     [rows],
   );
-  const [mode, setMode] = useState<"manual" | "auto">("manual");
+  const [mode, setMode] = useState<"manual" | "auto" | "batch">("manual");
 
   // manual
   const picked = useMemo(() => selectedIds.flatMap(id => { const row = rows.find(p => p.player_id === id); return row ? [row] : []; }), [rows, selectedIds]);
@@ -49,9 +50,8 @@ export default function ParlayTab({ rows, selectedIds, onSelectionChange }: { ro
   return (
     <div>
       <div className={styles.notice}>
-        <strong>This is a probability, not betting advice.</strong> It tells you how likely a parlay is to hit based on
-        stats — it does not know the payout, so it can&apos;t tell you whether it&apos;s a good bet. A likely parlay at a
-        bad price is still a bad bet, and an unlikely one at a great price can be a good one.
+        <strong>Model estimates, not verified betting probabilities.</strong> Combined estimates use an independence
+        approximation. They do not establish a validated joint probability or expected value.
       </div>
 
       <div className={styles.chips} style={{ marginBottom: 12 }} role="group" aria-label="Parlay mode">
@@ -71,6 +71,7 @@ export default function ParlayTab({ rows, selectedIds, onSelectionChange }: { ro
         >
           Auto-build for me
         </button>
+        <button type="button" aria-pressed={mode === "batch"} className={`${styles.chip} ${mode === "batch" ? styles.chipActive : ""}`} onClick={() => setMode("batch")}>Diversified combinations</button>
       </div>
 
       {mode === "manual" ? (
@@ -107,7 +108,7 @@ export default function ParlayTab({ rows, selectedIds, onSelectionChange }: { ro
           {manual.error && <div className={`${styles.notice} ${styles.noticeError}`}>{manual.error}</div>}
           {manual.result && <ParlayView result={manual.result} />}
         </div>
-      ) : (
+      ) : mode === "batch" ? <DiversifiedParlays rows={rows} meta={meta}/> : (
         <div className={styles.panel}>
           <h3>Let the model suggest one</h3>
           <div className={styles.controls}>
