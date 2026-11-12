@@ -98,12 +98,72 @@ try{
  });
  await check('invalid core data rejected safely',async()=>{brokenBoard=true;await page.reload();await page.getByRole('alert').filter({hasText:'Invalid injury or final-game metadata'}).waitFor();brokenBoard=false;});
  await page.reload();await page.getByText('Leading TD estimates',{exact:true}).waitFor();assert.deepEqual((await page.getByRole('alert').allTextContents()).filter(text=>text.trim()),[]);
+ const firstGame=board.meta.games[0];
+ const kickoff=Date.parse(firstGame.kickoff_utc);
+ const minute=60_000;
+ const generated=Math.max(...[board,gp,mi].map(value=>Date.parse(value.meta.generated_at)));
+ const projectionHeading=page.getByRole('heading',{name:'Projected final score · PPP Baseline',exact:true});
+ const recommendations=page.getByRole('region',{name:'Matchup-Based TD Recommendations',exact:true});
+ const selectFirstRecommendations=async()=>{
+  await nav('Game Breakdown');
+  await page.getByLabel('Game',{exact:true}).selectOption(firstGame.away_team+'@'+firstGame.home_team);
+  await page.getByRole('button',{name:'TD Recommendations',exact:true}).click();
+ };
+ const expectSuppressedRecommendations=async(status)=>{
+  await recommendations.getByRole('status').filter({hasText:status}).waitFor();
+  await recommendations.getByText('No current favorable/unfavorable recommendation is shown.',{exact:false}).first().waitFor();
+  assert.equal(await recommendations.getByText(/^(Favorable|Unfavorable)$/).count(),0);
+ };
  await check('stale pregame projections and recommendations are suppressed',async()=>{
-  await page.clock.setSystemTime(Date.parse(board.meta.generated_at)+7*3_600_000);await page.clock.runFor(61_000);
-  await nav('Game Predictor');await page.getByText('Projection suppressed until fresh pregame sources are available.',{exact:true}).waitFor();assert.equal(await page.getByRole('heading',{name:'Projected final score · PPP Baseline',exact:true}).count(),0);
-  await nav('Game Breakdown');await page.getByRole('button',{name:'TD Recommendations',exact:true}).click();await page.getByText('No current favorable/unfavorable recommendation is shown.',{exact:false}).waitFor();
+  // Inside six hours the age limit is 30 minutes. Leave room for the clock tick
+  // and keep this scenario outside the final 10-minute kickoff safety margin.
+  let staleAt=Math.max(generated+31*minute,kickoff-359*minute);
+  const originalBytes={...bytes};
+  try{
+   if(kickoff-staleAt<=11*minute){
+    // A valid last-minute capture may never go stale before the safety margin.
+    // Extend only the intercepted kickoff for this scenario, preserving model outputs.
+    const testKickoff=new Date(generated+45*minute).toISOString();
+    const testBoard=structuredClone(board),testGp=structuredClone(gp),testMi=structuredClone(mi);
+    testBoard.meta.games[0].kickoff_utc=testKickoff;
+    for(const sidecar of [testGp,testMi])sidecar.games[firstGame.game_id].kickoff_utc=testKickoff;
+    for(const [name,value] of [['board.json',testBoard],['game-predictor.json',testGp],['matchup-intelligence.json',testMi]]){
+     bytes[name]=Buffer.from(JSON.stringify(value));
+    }
+    activeManifest=structuredClone(manifest);
+    const files=activeManifest.seasons[board.meta.season].weeks[board.meta.week];
+    files.game_predictor_sha256=digest('game-predictor.json');
+    files.matchup_intelligence_sha256=digest('matchup-intelligence.json');
+    staleAt=generated+31*minute;
+    await page.reload();
+    await page.getByText('Leading TD estimates',{exact:true}).waitFor();
+   }
+   await page.clock.setSystemTime(staleAt);
+   await page.clock.runFor(1001);
+   await nav('Game Predictor');
+   await page.getByLabel('Predictor matchup').selectOption(firstGame.game_id);
+   await page.getByText('Unavailable — stale source data',{exact:true}).waitFor();
+   await page.getByText('Projection suppressed until fresh pregame sources are available.',{exact:true}).waitFor();
+   assert.equal(await projectionHeading.count(),0);
+   await selectFirstRecommendations();
+   await expectSuppressedRecommendations('Stale analysis — refresh required before a recommendation');
+  }finally{
+   Object.assign(bytes,originalBytes);
+   activeManifest=manifest;
+  }
  });
- await check('post-kickoff projections are explicitly archived forecasts',async()=>{await page.clock.setSystemTime(Date.parse(board.meta.games[0].kickoff_utc)+60_000);await page.clock.runFor(1001);await nav('Game Predictor');await page.getByText('Archived forecast — kickoff has passed',{exact:true}).waitFor();});
+ await check('post-kickoff projections are explicitly archived forecasts',async()=>{
+  await page.clock.setSystemTime(kickoff+minute);
+  await page.reload();
+  await page.getByText('Leading TD estimates',{exact:true}).waitFor();
+  await nav('Game Predictor');
+  await page.getByLabel('Predictor matchup').selectOption(firstGame.game_id);
+  await page.getByText('Archived forecast — kickoff has passed',{exact:true}).waitFor();
+  await projectionHeading.waitFor();
+  assert.equal(await page.getByText('Projection suppressed until fresh pregame sources are available.',{exact:true}).count(),0);
+  await selectFirstRecommendations();
+  await expectSuppressedRecommendations('Archived analysis — kickoff has passed');
+ });
  assert.deepEqual(errors,[]);
  console.log(`PASS complete unpublished captured bundle: ${board.meta.games.length} games, ${board.rows.length} players; rankings, multi-team, parlay, market, every PPP and intelligence matchup, mobile and safe unavailable/error states. No production data served or changed.`);
 }finally{await browser.close();}
