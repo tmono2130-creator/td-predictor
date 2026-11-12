@@ -136,6 +136,7 @@ export function ParlayView({ result }: { result: ParlayResult }) {
         }))}
       />
       <p className={styles.caption}>
+        Combined values are an independence approximation, not a validated joint probability.{" "}
         &ldquo;Model fair price&rdquo; is the break-even price for the model&apos;s probability (no sportsbook margin). A
         book paying noticeably more than this is pricing the parlay lower than the model does — which only matters
         if you trust the model.

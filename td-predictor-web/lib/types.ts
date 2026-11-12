@@ -49,6 +49,8 @@ export type RawBoardRow = {
   prediction_timing: PredictionTiming;
   actual_scored_td?: boolean | null;
   is_home?: number | null;
+  game_day_status?: "active" | "inactive" | "unknown";
+  roster_eligibility?: "eligible" | "ineligible" | "pending";
 };
 
 export type BoardFile = { meta: BoardMeta; rows: RawBoardRow[] };
@@ -76,6 +78,8 @@ export type BoardRow = BoardPlayer & {
   prediction_timing: PredictionTiming;
   actual_scored_td: boolean | null;
   is_home: number | null;
+  game_day_status?: "active" | "inactive" | "unknown";
+  roster_eligibility?: "eligible" | "ineligible" | "pending";
 };
 
 export type TableCell = string | number | boolean | null;
@@ -101,6 +105,6 @@ export type BreakdownsFile = {
   errors: Record<string, string>;
 };
 
-export type SectionId = "dashboard" | "rankings" | "parlay" | "market" | "breakdown" | "game";
+export type SectionId = "dashboard" | "rankings" | "parlay" | "market" | "breakdown" | "game" | "performance";
 export type StoredComparison = { player_id: string; odds: string };
 export type { ParlayResult };

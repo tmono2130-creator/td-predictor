@@ -102,7 +102,7 @@ jobs:
       - run: python -m pip install -r requirements-automation.txt
       - run: python -m pip install ruff==0.14.0
       - name: Lint reviewed pipeline source and tests
-        run: python -m ruff check --select F weekly_capture.py weekly_data.py validation_tools.py artifact_schema.py test_weekly_data.py weekly_pipeline.py weekly_schedule.py weekly_generation.py weekly_sources.py weekly_storage.py roster_eligibility.py matchup_intelligence.py game_projection_artifact.py game_projection_evaluate.py verify_publication.py production_health.py test_production_reliability.py
+        run: python -m ruff check --select F weekly_capture.py weekly_data.py validation_tools.py artifact_schema.py test_weekly_data.py weekly_pipeline.py weekly_schedule.py weekly_generation.py weekly_sources.py weekly_storage.py roster_eligibility.py matchup_intelligence.py game_projection_artifact.py game_projection_evaluate.py verify_publication.py production_health.py test_production_reliability.py postgame_evaluation.py data_quality.py test_postgame_evaluation.py test_data_quality.py
       - run: python -m unittest discover -v
       - name: Verify protected source and original production files
         env:
@@ -172,6 +172,7 @@ jobs:
           node scripts/multi-team-smoke.mjs
           node scripts/game-predictor-smoke.mjs
           node scripts/matchup-smoke.mjs
+          node scripts/reliability-features-smoke.mjs
       - run: git diff --exit-code HEAD -- .
 
   hosted-capture:

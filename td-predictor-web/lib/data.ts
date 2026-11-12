@@ -73,6 +73,8 @@ export function normalizeBoard(file: BoardFile): BoardRow[] {
       prediction_timing: row.prediction_timing,
       actual_scored_td: row.actual_scored_td ?? null,
       is_home: row.is_home ?? null,
+      game_day_status: row.game_day_status,
+      roster_eligibility: row.roster_eligibility,
     };
   });
 }
@@ -132,6 +134,8 @@ export function boardValidationError(value: BoardFile | null, season: number, we
         row.prediction_timing !== game.prediction_timing) {
       return "A player row contains an invalid status or timing value.";
     }
+    if ((row.game_day_status !== undefined && !["active", "inactive", "unknown"].includes(row.game_day_status)) ||
+        (row.roster_eligibility !== undefined && !["eligible", "ineligible", "pending"].includes(row.roster_eligibility))) return "Invalid explicit eligibility evidence.";
     for (const probability of [row.td_score, row.td_estimate]) {
       if (typeof probability !== "number" || !Number.isFinite(probability) || probability < 0 || probability > 100) {
         return "A player row contains an invalid score or estimate.";

@@ -10,6 +10,7 @@ import MarketTab from "../components/market-check";
 import BreakdownTab from "../components/game-breakdown";
 import GamePredictor from "../components/game-predictor";
 import Overview from "../components/overview";
+import ModelPerformance from "../components/model-performance";
 import SnapshotFreshness from "../components/snapshot-freshness";
 import { latestGeneratedWeek } from "../lib/week-selection";
 const TABS: { id: SectionId; label: string; accessible: string }[] = [
@@ -19,6 +20,7 @@ const TABS: { id: SectionId; label: string; accessible: string }[] = [
  { id: "market", label: "Market Check", accessible: "Market Check" },
  { id: "game", label: "Game Predictor", accessible: "Game Predictor" },
  { id: "breakdown", label: "Game Breakdown", accessible: "Game Breakdown" },
+ { id: "performance", label: "Performance", accessible: "Model Performance" },
 ];
 function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
   const seasonOptions = Object.keys(manifest.seasons).map(Number).filter(Number.isFinite).sort((a, b) => b - a);
@@ -52,14 +54,14 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
       <aside className={styles.sidebar}>
         <Link className={styles.brand} href="/">NFL<span>PM</span><small>TOUCHDOWN ANALYTICS</small></Link>
         <span className={styles.navLabel}>WORKSPACE</span>
-        <nav aria-label="Main navigation">{TABS.map((t,i) => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d={["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z","M4 5h16M4 12h16M4 19h16M8 3v18","M4 7h16v14H4zM8 7V5a4 4 0 018 0v2M8 13h8M12 9v8","M3 17l6-6 4 3 8-10M15 4h6v6","M3 12h18M12 3v18M4 4l16 16","M4 4h16v16H4zM4 10h16M10 4v16"][i]} /></svg><span>{t.label}</span>{t.id === "parlay" && selectedIds.length > 0 ? <small className={styles.navCount}>{selectedIds.length}</small> : null}</button>)}</nav>
+        <nav aria-label="Main navigation">{TABS.map((t,i) => <button key={t.id} type="button" aria-label={t.accessible} aria-current={tab === t.id ? "page" : undefined} className={`${styles.navItem} ${tab === t.id ? styles.navActive : ""}`} onClick={() => setTab(t.id)}><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d={["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z","M4 5h16M4 12h16M4 19h16M8 3v18","M4 7h16v14H4zM8 7V5a4 4 0 018 0v2M8 13h8M12 9v8","M3 17l6-6 4 3 8-10M15 4h6v6","M3 12h18M12 3v18M4 4l16 16","M4 4h16v16H4zM4 10h16M10 4v16"][i] ?? "M4 18l5-7 4 3 7-10"} /></svg><span>{t.label}</span>{t.id === "parlay" && selectedIds.length > 0 ? <small className={styles.navCount}>{selectedIds.length}</small> : null}</button>)}</nav>
         <div className={styles.sidebarNote}><span className={styles.liveDot} /> PUBLISHED SNAPSHOTS<p>Independent estimates.<br/>Your weekly football perspective.</p><span className={styles.sidebarSeason}>{season} SEASON · WEEK {week}</span></div>
       </aside>
       <main id="main-content" className={styles.shell}>
         <header className={styles.header}>
           <div className={styles.eyebrow}>NFL / TOUCHDOWN ANALYTICS</div><h1>{TABS.find(t => t.id === tab)?.label}</h1>
           <p className={styles.subtitle}>Explore the slate, compare probabilities and understand every matchup.</p>
-          <div className={styles.metaRow}>
+          {tab !== "performance" && <div className={styles.metaRow}>
             <label className={styles.pill}>Season{" "}
               <select className={styles.select} aria-label="Season" value={String(season)} onChange={(e) => {
                 const nextSeason = Number(e.target.value);
@@ -83,22 +85,23 @@ function WeeklyDashboard({ manifest }: { manifest: DataManifest }) {
                 {data.meta.injury_report.week_available ? "Weekly injury report available" : "Weekly injury report unavailable"}
               </span>
             </>}
-          </div>
+          </div>}
         </header>
 
-        {loading && <div role="status" className={styles.loading}><span className={styles.spinner} />Loading {season} week {week}…</div>}
-        {!loading && !boardUrl && <div className={`${styles.notice} ${supported ? styles.noticeInfo : styles.noticeError}`}>
+        {tab === "performance" && <ModelPerformance key={`${season}:${week}`} season={season} week={week}/>}
+        {tab !== "performance" && loading && <div role="status" className={styles.loading}><span className={styles.spinner} />Loading {season} week {week}…</div>}
+        {tab !== "performance" && !loading && !boardUrl && <div className={`${styles.notice} ${supported ? styles.noticeInfo : styles.noticeError}`}>
           {supported ? `Predictions for ${season} week ${week} have not been generated yet. Choose a generated week to explore available predictions.` : `Week ${week} is outside the supported regular-season range.`}
         </div>}
-        {!loading && boardUrl && boardError && <div role="alert" className={`${styles.notice} ${styles.noticeError}`}>
+        {tab !== "performance" && !loading && boardUrl && boardError && <div role="alert" className={`${styles.notice} ${styles.noticeError}`}>
           Couldn&apos;t load valid predictions for {season} week {week}: {boardError}. Try another generated week or reload the page.
         </div>}
 
         {data && !boardError && !loading && <>
-          <div className={styles.snapshotBar}><span className={styles.liveDot} /> GENERATED SNAPSHOT <span>{data.meta.games.length} matchups · {rows.length} players</span></div>
+          {tab !== "performance" && <div className={styles.snapshotBar}><span className={styles.liveDot} /> GENERATED SNAPSHOT <span>{data.meta.games.length} matchups · {rows.length} players</span></div>}
           {tab === "dashboard" && <Overview rows={rows} meta={data.meta} onNavigate={setTab} />}
           <Activity mode={tab === "rankings" ? "visible" : "hidden"}><RankingsTab key={`${season}:${week}`} rows={rows} meta={data.meta} onAdd={addToParlay} selectedIds={selectedIds} /></Activity>
-          <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} selectedIds={selectedIds} onSelectionChange={updateSelection} /></Activity>
+          <Activity mode={tab === "parlay" ? "visible" : "hidden"}><ParlayTab key={`${season}:${week}`} rows={rows} meta={data.meta} selectedIds={selectedIds} onSelectionChange={updateSelection} /></Activity>
           <Activity mode={tab === "market" ? "visible" : "hidden"}><MarketTab key={`${season}:${week}`} rows={rows} meta={data.meta} /></Activity>
           <Activity mode={tab === "game" ? "visible" : "hidden"}><GamePredictor key={`${season}:${week}`} season={season} week={week} games={data.meta.games} url={entry?.game_predictor?`/data/${entry.game_predictor}`:null} pin={entry?.game_predictor_sha256??null}/></Activity>
           <Activity mode={tab === "breakdown" ? "visible" : "hidden"}><BreakdownTab key={`${season}:${week}`} boardMeta={data.meta} rows={rows} dataUrl={breakdownsUrl} intelligenceUrl={entry?.matchup_intelligence ? `/data/${entry.matchup_intelligence}` : null} intelligenceHash={entry?.matchup_intelligence_sha256 ?? null} /></Activity>
