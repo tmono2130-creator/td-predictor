@@ -251,6 +251,23 @@ class TargetAndEligibilityTests(unittest.TestCase):
         with self.assertRaises(EligibilityError):
             resolve_roster(pd.DataFrame([{**departed,'status':'INA'}]),pd.DataFrame(),known,2026,9,{'KC'})
 
+    def test_exempt_membership_and_unresolved_status_scope(self):
+        active = dict(season=2026, week=10, team='WAS', position='WR',
+                      status='ACT', gsis_id='00-0030001', full_name='TEST ACTIVE')
+        exempt = {**active, 'team': 'SF', 'status': 'EXE', 'status_description_abbr': 'E02',
+                  'gsis_id': '00-0030002'}
+        sf_active = {**active, 'team': 'SF', 'gsis_id': '00-0030003'}
+        known = pd.DataFrame([{'gsis_id': r['gsis_id']} for r in [active, sf_active]])
+        pool, audit = resolve_roster(pd.DataFrame([active, sf_active, exempt]),
+                                     pd.DataFrame(), known, 2026, 10, {'WAS', 'SF'})
+        self.assertEqual(set(pool.player_id), {'00-0030001', '00-0030003'})
+        self.assertEqual(audit['counts'], {'include': 2, 'exclude': 1, 'pending': 0})
+        unknown = pd.DataFrame([active, sf_active, {**exempt, 'status': 'E02'}])
+        with self.assertRaises(EligibilityError):
+            resolve_roster(unknown, pd.DataFrame(), known, 2026, 10, {'WAS', 'SF'})
+        scoped, _ = resolve_roster(unknown, pd.DataFrame(), known, 2026, 10, {'WAS'})
+        self.assertEqual(list(scoped.player_id), ['00-0030001'])
+
     def test_sidecar_validation_dependencies_and_ci_remain_read_only(self):
         import yaml
         for name in ('reviewed-data-checks','verify-published-data'):
