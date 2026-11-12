@@ -120,7 +120,7 @@ jobs:
   frontend:
     name: Frontend publication build
     needs: [publication-safety, python-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
